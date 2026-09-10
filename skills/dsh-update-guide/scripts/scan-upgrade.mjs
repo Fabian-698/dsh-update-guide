@@ -14,6 +14,9 @@
  *   6. V3 迁移概览         有 v3 后继的会话数 / 仅 v2 待惰性迁移的会话数(0.1.5+)
  *   7. v0 可迁移性         仅 v2 的会话是否含 0.1.5 迁移器拒绝的历史形态(打开即 resume failed)
  *
+ * 注: 静态模式覆盖不到全部断链(典型: 0.1.5 服务访问缺 inject 只在插件 apply 时崩)。启用第三方插件前
+ * 先跑 scripts/test-plugin-boot.mjs 做隔离启动测试(见 SKILL.md 第 4 节); 本文件只负责标记已知模式。
+ *
  * 版本门控:
  *   < 0.1.2-rc.1   info 提示未达最低检查版本, 跳过后续, exit 0
  *   >= 0.1.2-rc.1  基础检查集(旧断链模式、死干预、模型引用、事件类型)
@@ -179,6 +182,13 @@ const PATTERNS = [
     severity: 'warning', since: '0.1.5-rc.1',
     fix: '0.1.5 Detail 面板已移除, 能力迁至右侧 Sidebar；改用 sidebar/详情视图扩展点',
   },
+  {
+    name: 'connection.rpc.handle 缺 webServer inject', re: /ctx\s*\.\s*connection\s*\.\s*rpc\b/g, adapter: ['webServer'],
+    severity: 'blocker', since: '0.1.5-rc.1',
+    adapterNote: '已声明 webServer',
+    adapterFix: '文件已出现 webServer(inject 通常已含), 静态判定非断链; 仍建议跑 test-plugin-boot.mjs 确认',
+    fix: '0.1.5 起 connection.rpc.handle 在调用方 fiber 上注册路由并取 webServer 服务; 插件 inject 缺 "webServer" 则启动即崩(cannot get property "webServer" without inject), 且整棵插件树加载失败。实例如 @js2hou/dsh-mcp-manager 0.1.5(上游 issue #6); 优先等上游适配(本机实测仅补 inject 仍失败), 用 test-plugin-boot.mjs 复核',
+  },
 ]
 
 // 只扫"实际装配的入口", 不扫源码头(plugin-src/src 是未打包源码, 入口在 lib/)
@@ -274,7 +284,8 @@ function scanSources(runV15) {
           }
         }
         if (sev === 'info') {
-          report('source', 'info', `${pat.name}(兼容层) → ${f.replace(DSH_HOME, '~/.dsh')}`, '已含兼容层(探测新 API 后回退), 非断链')
+          report('source', 'info', `${pat.name}(${pat.adapterNote ?? '兼容层'}) → ${f.replace(DSH_HOME, '~/.dsh')}`,
+            pat.adapterFix ?? '已含兼容层(探测新 API 后回退), 非断链')
           continue
         }
         report('source', sev, `${pat.name} → ${f.replace(DSH_HOME, '~/.dsh')}`, pat.fix)

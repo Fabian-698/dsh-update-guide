@@ -11,7 +11,7 @@ verify-patch(与 verify-patch-surface)规范版在 dsh-config-assembly/scripts/;
 - 模式 1:preset/插件 `session.events` 断链 ★
 - 模式 2:失效模型引用 ★
 - 模式 3:配置死干预行 ★
-- 模式 4:第三方插件未适配(agent-teams 等)★
+- 模式 4:第三方插件未适配与启用前 boot 测试 ★
 - 模式 5:校验工具误报修复 ★(闸门已收归 owner)
 - 模式 6:会话引用的 preset 已删除 → resume 失败 ★(2026-09-08 实战)
 - 模式 7:V3 日志读取器适配(0.1.5)★
@@ -106,15 +106,43 @@ node <skill>/scripts/verify-patch.mjs --profile web --diff-default   # 无 clobb
 node <dsh-config-assembly>/scripts/verify-patch-surface.mjs --profile web --check  # 干预面 S1 全命中
 ```
 
-## 模式 4:第三方插件未适配(agent-teams 等)★
+## 模式 4:第三方插件未适配与启用前 boot 测试 ★
 
-事实:@nanmicoder/dsh-agent-teams 0.1.15(npm 最新)源码用 `child.session.events.slice(...)` + `ctx.subagents.registerContinuableSetup`,在 0.1.2-rc.1 下**启用必失败**(dshmarket 日志:`entry update failed — ... is not a function`)。
-0.1.5 起 Agent Teams 包可从 npm 安装,但**需显式添加 profile,不默认启用**;启用前先确认插件已适配
-`ctx.agent` 移除、Inbox 类型接口、conversation Slot 迁移(模式 8-10)。
+**固定步骤:启用任何第三方插件前,先做隔离 boot 测试**——静态扫描覆盖不到只在插件 apply 时触发的断链,
+而失效插件会让**整棵插件树**加载失败(dsh web 直接起不来):
+
+```bash
+node <skill>/scripts/test-plugin-boot.mjs          # 复制 profile 到临时 DSH_HOME,全量启用并逐轮隔离失败项
+node <skill>/scripts/test-plugin-boot.mjs --json   # 机器可读;--keep 保留临时 home 与日志排查
+```
+
+脚本只读真实 `~/.dsh`(复制 profile、排除 node_modules 后软链;settings/credentials 复制进 0700 临时目录,
+结束即删),用 `dsh web --port 0 --no-open` 启动,看到 URL 后再等 15s 让晚失败的 entry 暴露;失败项按
+`failed to apply loader entry <id> (<包名>)` 自动 quarantine 后重试。退出码 `0`=全部可启用,`1`=有不兼容项
+(已列清单),`2`=环境不满足或非插件单点失败。本机 2026-09-10 实测:静态 scan 全绿,该脚本一轮就抓到
+`@js2hou/dsh-mcp-manager` 启动即崩。
+
+**0.1.5 新失败类:服务访问必须 inject**。0.1.5 的 `ctx.connection.rpc.handle(...)` 在**调用方 fiber** 上
+注册路由并取 `webServer` 服务;插件 `inject` 缺 `"webServer"` → 启动报
+`cannot get property "webServer" without inject`,**整棵插件树加载失败**(scan 检查项 2 会标 blocker;插件已
+disabled 时降为 warning)。
+- 实例:`@js2hou/dsh-mcp-manager` 0.1.5(npm 与 GitHub 均为最新;上游 issue #6 同因未修)→ **保持 disabled 等上游**。
+- 本机实测给该插件 inject 补 `"webServer"` 后**仍然失败**,说明不只是 inject 表面缺失,不要自行硬改 node_modules
+  (升级即丢);确需本地维护就复制到 `~/.dsh/plugins/<name>/`,并同样先跑 boot 测试。
+- 同类形态:插件直接 `ctx.connection.rpc` 拿通道注册器的,先查自己 inject 有没有 `webServer`。
+
+事实(0.1.2 代):@nanmicoder/dsh-agent-teams 0.1.15(npm 最新)源码用 `child.session.events.slice(...)` +
+`ctx.subagents.registerContinuableSetup`,在 0.1.2-rc.1 下**启用必失败**(dshmarket 日志:`entry update failed
+— ... is not a function`)。
 - **正确动作**:保持该插件 `disabled: true`,等作者发布适配版。不要本地改 node_modules(下次升级即丢)。
-- 若必须现在用:把插件目录复制到 `~/.dsh/plugins/<name>/` 本地维护,改 `session.events.slice(...)` → `session.snapshotEvents().slice(...)`,`header.seedLength` 读取改 `isSeeded` 语义,并去掉 `registerContinuableSetup` 调用(该 API 0.1.2 中已不存在,需按新 subagent API 重写,超出简单修复范围)。
+- 若必须现在用:把插件目录复制到 `~/.dsh/plugins/<name>/` 本地维护,改 `session.events.slice(...)` →
+  `session.snapshotEvents().slice(...)`,`header.seedLength` 读取改 `isSeeded` 语义,并去掉
+  `registerContinuableSetup` 调用(该 API 0.1.2 中已不存在,需按新 subagent API 重写,超出简单修复范围)。
+- 0.1.5 起 Agent Teams 包可从 npm 安装,但**需显式添加 profile,不默认启用**;启用前先确认插件已适配
+  `ctx.agent` 移除、Inbox 类型接口、conversation Slot 迁移(模式 8-10)。
 
-**验证**:`dshmarket --profile web` 日志无 `on ok=false`;`node <skill>/scripts/verify-patch.mjs --profile web` 不变红。
+**验证**:`node <skill>/scripts/test-plugin-boot.mjs` 退出码 0 且无 quarantine;dshmarket 日志无 `on ok=false`;
+`node <skill>/scripts/verify-patch.mjs --profile web` 不变红。
 
 ## 模式 5:校验工具误报修复 ★(闸门已收归 owner)
 

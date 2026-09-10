@@ -1,13 +1,31 @@
 ---
 name: dsh-update-guide
-description: 指导并修复 DeepSeek Harness (dsh) 从 0.1.2 升级到 0.1.5+——升级流程（备份→切 tag/快进→pnpm install/build→dshmarket 重启）与升级后故障：旧会话打不开/报错、session.events/snapshotEvents 崩溃、UNKNOWN_MODEL、session.v3.jsonl.zstd 与 V3 格式、v0 会话迁移被拒（resume failed / refuses this format v0 Session）、ctx.agent 移除与插件不兼容、verify-session S8/S12 判定、配置死干预。任何设备刚升级 dsh 或问「怎么升级 dsh / 升级后旧会话打不开 / UNKNOWN_MODEL」时，先跑一键体检 scan-upgrade.mjs（版本感知），按本指南修复后用双闸门 verify-session + verify-patch 确认归零；纯日志分析走 dsh-session-logs，纯配置装配走 dsh-config-assembly，普通依赖更新（pnpm update 等）不适用。English — how to upgrade dsh from 0.1.2 to 0.1.5, can't open sessions after upgrading dsh, session resume failed, UNKNOWN_MODEL, session.events, snapshotEvents, V3 session format, ctx.agent, plugin incompatible, dsh upgrade health scan.
+description: 指导并修复 DeepSeek Harness (dsh) 从 0.1.2 升级到 0.1.5+——升级流程（备份→切 tag/快进→pnpm install/build→dshmarket 重启）与升级后故障：旧会话打不开/报错、session.events/snapshotEvents 崩溃、UNKNOWN_MODEL、session.v3.jsonl.zstd 与 V3 格式、v0 会话迁移被拒（resume failed / refuses this format v0 Session）、ctx.agent 移除与插件不兼容(含 0.1.5 服务 inject 缺失导致启动即崩)、verify-session S8/S12 判定、配置死干预。任何设备刚升级 dsh 或问「怎么升级 dsh / 升级后旧会话打不开 / UNKNOWN_MODEL」时，先跑一键体检 scan-upgrade.mjs（版本感知），按本指南修复后用双闸门 verify-session + verify-patch 确认归零；纯日志分析走 dsh-session-logs，纯配置装配走 dsh-config-assembly，普通依赖更新（pnpm update 等）不适用。English — how to upgrade dsh from 0.1.2 to 0.1.5, can't open sessions after upgrading dsh, session resume failed, UNKNOWN_MODEL, session.events, snapshotEvents, V3 session format, ctx.agent, plugin incompatible, dsh upgrade health scan.
+license: MIT
+metadata:
+  repository: https://github.com/Fabian-698/dsh-update-guide
+  dsh-version-range: "0.1.2-rc.1 .. 0.1.5-rc.1"
+  node: ">=18"
 ---
 
 # dsh 更新与升级修复指南(0.1.2 → 0.1.5+)
 
 > 本技能原名 `dsh-upgrade-fix-012`,现名 **`dsh-update-guide`**;覆盖 **0.1.2-rc.1 → 0.1.5-rc.1** 两代破坏性变更与升级后的断链修复。
+> 仓库:https://github.com/Fabian-698/dsh-update-guide (安装、多平台发现、版本与依赖矩阵见仓库 README)。
 > REQUIRED BACKGROUND:`../dsh-foundations/SKILL.md`(dsh 心智模型与安全红线);相关技能:`../dsh-run/SKILL.md`、`../dsh-session-logs/SKILL.md`、`../dsh-config-assembly/SKILL.md`。
 > 0.1.2 代细节见 `references/breaking-changes-0.1.2.md`;0.1.5 代(含 V3 会话格式)见 `references/breaking-changes-0.1.5.md`。
+
+## 版本与依赖(先核对,再动手)
+
+| 项 | 约束 | 核对方式 |
+|---|---|---|
+| dsh | **0.1.2-rc.1 → 0.1.5-rc.1**(含端点);区间外只做人工判定,`scan-upgrade.mjs` 会先打印检测版本并按版本选检查集 | `dsh --version` |
+| 升级链路 | 0.1.2-rc.1 → 0.1.3-alpha.1 → 0.1.3-alpha.2 → 0.1.5-alpha.1 → 0.1.5-alpha.2 → 0.1.5-rc.1(GitHub 上**无 0.1.4、无 0.1.5-rc.2**) | `git fetch --tags && git tag -l 'dsh-v0.1.*'` |
+| Node | ≥ 18;全部脚本为 Node ESM,**只用 `node:` 内建模块,无第三方依赖** | `node -v` |
+| 本技能 | 自足:体检/修复/boot 测试/自测/闸门都在本目录内;闸门副本在 `scripts/gates/` | `node scripts/selftest.mjs`、`node scripts/sync-gates.mjs --check` |
+| 兄弟技能(推荐同装) | `dsh-foundations`(必读背景)、`dsh-session-logs`(verify-session owner)、`dsh-config-assembly`(verify-patch / verify-patch-surface owner)、`dsh-run`(启动与 dshmarket 重启);装在同一技能树目录下 | 与 `~/.dsh/skills/` 同级;缺失只影响 owner 解析,本技能仍可独立跑通(走 `scripts/gates/`) |
+| 会话格式 | v0/v2 = `session.jsonl.zstd`;v3 = `session.v3.jsonl.zstd`(header `"version":3`);**V3 不可降级读取**,回退旧版前必须备份 | `node scripts/verify-session.mjs --all`(S12) |
+| 破坏性写操作的前提 | 第 0 步 `repair-v0-sessions.mjs --apply` 要求 `sessions.bak-*` 中存在目标会话同相对路径的备份 | `node scripts/repair-v0-sessions.mjs --list` |
 
 ## 这个技能解决什么
 
@@ -58,9 +76,12 @@ node <skill>/scripts/scan-upgrade.mjs [--dsh-home ~/.dsh] [--profile web] [--jso
 
 - **版本感知**:按当前版本选择 **0.1.2 检查集 + 0.1.5 检查集**;不会再"未达 0.1.2 直接跳过剩余项"。
 - 检查 7+ 类:版本核对、旧 API 残留(`session.events`/`header.seedLength`/`header-delta`/
-  `reason:"fallback"`)、**0.1.5 新断链模式(`ctx.agent`、Inbox、conversation Slot、Detail 面板)**、
-  第三方插件断链、配置死干预、失效模型引用、未知事件类型、V3 迁移概览、**v0 会话可迁移性(`migration` 项,检查项 7)**。
+  `reason:"fallback"`)、**0.1.5 新断链模式(`ctx.agent`、Inbox、conversation Slot、Detail 面板、
+  `connection.rpc.handle` 缺 `webServer` inject)**、第三方插件断链、配置死干预、失效模型引用、未知事件类型、
+  V3 迁移概览、**v0 会话可迁移性(`migration` 项,检查项 7)**。
   脚本落盘分类为 `version / source / config / model / events / v3 / migration` 七类。
+- **静态模式有盲区**:只在插件 apply 时触发的断链(如 inject 缺失)扫描未必命中,而失效插件会让整棵插件树
+  加载失败 → **启用任何第三方插件前先跑 `test-plugin-boot.mjs` 隔离启动测试**(见第 4 节)。
 - **统计 V3 迁移进度**:列出 v2(`session.jsonl.zstd`)与 v3(`session.v3.jsonl.zstd`)会话数量,
   v3 为后继、v2 原文件保留。
 - `--profile` 默认 `web`;`--json` 便于喂给后续步骤。
@@ -145,13 +166,31 @@ cookie 获取:`curl -c /tmp/dshcookies.txt -o /dev/null "http://127.0.0.1:3080/?
 → 该行永远不生效,纯噪音。删除即可;profile 级 patch 改动需重启生效。
 0.1.5 仍要**抄全 web 默认行的键集**(含 0.1.2 起就有的 `fetchProvider`),否则触发 config-clobber。
 
-### 4. 第三方插件未适配(按体检建议)
+### 4. 第三方插件未适配(启用前必做 boot 测试)
 
-- 有兼容层的(mnemon 0.5.2、dsh-im 4.9.1 等):已是"探测新 API 后回退"写法,视为适配完成,不用动。
+**固定步骤:启用任何第三方插件前,先在隔离 DSH_HOME 里启动一次**——静态扫描覆盖不到只在插件 apply 时触发的
+断链,而失效插件会让**整棵插件树**加载失败(dsh web 直接起不来):
+
+```bash
+node <skill>/scripts/test-plugin-boot.mjs          # 全量启用 → 失败项自动隔离 → 重试到启动成功
+node <skill>/scripts/test-plugin-boot.mjs --json   # 机器可读;--keep 保留临时 home 与日志排查
+```
+
+脚本只读真实 `~/.dsh`(复制 profile 并软链 node_modules;settings/credentials 复制进 0700 临时目录,结束即删),
+用临时 home 跑 `dsh web --port 0 --no-open`,看到 URL 后再等 15s 让晚失败的 entry 暴露;退出码 **0 = 全部可启用,
+1 = 有不兼容项(已列清单),2 = 环境不满足**。本机 2026-09-10 实测:静态体检全绿,该脚本一轮抓到 mcp-manager 启动崩溃。
+
+**0.1.5 新失败类:服务访问必须 inject**。`ctx.connection.rpc.handle(...)` 在调用方 fiber 上注册路由并取
+`webServer` 服务;插件 `inject` 缺 `"webServer"` → 启动报 `cannot get property "webServer" without inject`。
+已知 `@js2hou/dsh-mcp-manager` 0.1.5 命中(上游 issue #6 未修;本机实测仅补 inject 仍失败)→ 保持 disabled,
+详见 `references/fix-patterns.md` 模式 4。
+
+其余规则:
+- 有兼容层的(mnemon 0.5.6/0.5.7、dsh-im 4.18.1 等):已是"探测新 API 后回退"写法,视为适配完成,不用动。
 - 裸引用的(agent-teams 0.1.15 等):**保持 disabled 等上游适配**,不要自己改 node_modules(升级即丢)。
 - 0.1.5 起实验性 **Agent Teams 包可从 npm 安装,但需显式添加 profile,不默认启用**;启用前先确认已适配
   `ctx.agent`/Inbox/Slot 三项变化。
-- 想现在就用的:把插件目录复制到 `~/.dsh/plugins/<name>/` 本地维护再改,升级不丢。
+- 想现在就用的:把插件目录复制到 `~/.dsh/plugins/<name>/` 本地维护再改,升级不丢(改完同样先跑 boot 测试)。
 
 ### 5. V3 会话格式与子代理会话(0.1.5 必读)
 
@@ -187,7 +226,7 @@ node <skill>/scripts/verify-patch.mjs --profile web --diff-default
 - 第三方扩展事件类型用 `--ignore-type t1,t2`;`--lenient-unknown` 降为 warn。
 - **两个都 ALL PASS 才算修完;有 FAIL 禁止重启**(带损坏日志重启可能让 session 列表整体 500,先修再启)。
   若环境受限导致 dump-config 报 EROFS,按脚本提示在用户终端或更高权限下重跑。
-- 改动本技能的脚本/事件表/闸门后,先跑确定性自测,再跑双闸门(自测覆盖 A 语法/B 事件表一致/C 内置模型 id/D 闸门解析/E fixtures 回归/F V3 优先/H S1 判定/I migration 判定;`--full` 追加真实体检):
+- 改动本技能的脚本/事件表/闸门后,先跑确定性自测,再跑双闸门(自测覆盖 A 语法/B 事件表一致/C 内置模型 id/D 闸门解析/E fixtures 回归/F V3 优先/H S1 判定/I migration 判定/J 严格 inject 判定;`--full` 追加真实体检):
   ```bash
   node <skill>/scripts/selftest.mjs          # 快速档(不扫描真实会话)
   node <skill>/scripts/selftest.mjs --full   # 追加真实 scan-upgrade --json(要求无 blocker 且未被版本门控跳过)
@@ -249,7 +288,8 @@ node <skill>/scripts/verify-patch.mjs --profile web --diff-default
 - `references/fix-patterns.md` — 0.1.2 模式 1-6 + 0.1.5 模式 7-15(V3 读取器、ctx.agent、Inbox、面板 Slot、persona、minimal、subprocess pid、session 锁、v0 迁移被拒)
 - `references/model-fix.md` — UNKNOWN_MODEL 完整复盘(0.1.5 版):合法目录并集、六个误报案例、selectModel 写全局默认的副作用、v3 优先
 - `scripts/repair-v0-sessions.mjs` — 修复无法迁移到 V3 的 v0 会话(三类已知拒绝形态):`--list` / `--apply`(需 `sessions.bak-*` 备份);离线跑完整迁移链校验后才原子替换
-- `scripts/selftest.mjs` — 确定性自测(A 语法、B 事件表一致、C 内置模型 id、D 闸门解析、E V2/V3 fixtures 回归、F 目录优先 V3、H S1 活跃 turn 判定、I migration 判定);`--full` 追加真实体检
+- `scripts/test-plugin-boot.mjs` — 启用第三方插件前的隔离启动测试:复制 profile 到临时 DSH_HOME,全量启用并逐轮隔离失败插件,输出不兼容清单与首个错误行;退出码 0=全可启用/1=有不兼容/2=环境不满足
+- `scripts/selftest.mjs` — 确定性自测(A 语法、B 事件表一致、C 内置模型 id、D 闸门解析、E V2/V3 fixtures 回归、F 目录优先 V3、H S1 活跃 turn 判定、I migration 判定、J 严格 inject 判定);`--full` 追加真实体检
 - `scripts/sync-gates.mjs` — 闸门副本同步与漂移校验(`--list` / `--embed` / `--check`);`--embed` 用于本技能独立复制到别的机器
 - 闸门 owner:`../dsh-session-logs/SKILL.md`(verify-session)、`../dsh-config-assembly/SKILL.md`(verify-patch / verify-patch-surface)
 - 相关技能:`../dsh-foundations/SKILL.md`(必读背景)、`../dsh-run/SKILL.md`、`../dsh-session-logs/SKILL.md`、`../dsh-config-assembly/SKILL.md`

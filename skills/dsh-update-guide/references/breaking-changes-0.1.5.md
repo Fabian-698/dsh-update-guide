@@ -41,6 +41,7 @@
 | ★★5 | **Inbox API 调整**:`Inbox` 改为**类型接口**,不再导出可构造的运行时类;`hasPending` 与 `claim` 不再属于公共接口;插件通过 `agent.inbox` 读写待处理消息 | 构造 Inbox 实例或调 hasPending/claim 的插件 | scan-upgrade 0.1.5 检查集命中 Inbox 用法;grep `new Inbox`、`hasPending`、`claim` | 改用 `agent.inbox`;等待/认领语义对照当前包内 Inbox 类型定义重写,见 fix-patterns.md 模式 9 |
 | ★6 | **自定义 persona 配置拆分为 prefix / suffix**,旧配置及相关常量需适配 | 配置了自定义 persona 的 profile/patch | grep settings.yaml / cordis.patch.yml 里的 persona 配置;scan-upgrade 0.1.5 检查集 | 按 prefix/suffix 两字段拆分旧值,见 fix-patterns.md 模式 11;dump-config + verify-patch |
 | ★★7 | **Web 插件面板 API 调整**:插件可通过 `sidebar.panellist` 与 `main` 注册全局面板;原 `conversation` Slot 迁移为 `main` 的 `conversation` key;**Detail 面板已移除**,能力迁至右侧 Sidebar(多标签/分栏/全屏,Markdown、代码、HTML、PDF、图片预览,含子代理与未激活会话的文件) | 注册 conversation Slot 或依赖 Detail 面板的 client 插件/自定义 UI | scan-upgrade 0.1.5 检查集命中 conversation Slot / Detail;grep 插件 client 源码的 slot 注册与 Detail | 全局面板改注册到 `sidebar.panellist` 与 `main`;会话面板用 `main.conversation`;Detail 交互迁 Sidebar,见 fix-patterns.md 模式 10 |
+| ★★18 | **服务访问严格 inject(2026-09-10 本机实测)**:`ctx.connection.rpc.handle(...)` 等注册类 API 改为在**调用方 fiber** 上注册并取服务;插件少了对应 inject(如 `webServer`)会在 apply 时报 `cannot get property "webServer" without inject`,**整棵插件树加载失败**(不是单个插件失效) | 调用 connection RPC 注册的第三方插件(实例:`@js2hou/dsh-mcp-manager` 0.1.5,上游 issue #6) | 启动日志 `plugin tree failed to load: failed to apply loader entry <id> ... without inject`;scan-upgrade 检查项 2 已固化该模式;启用前跑 `test-plugin-boot.mjs` 一轮复现 | 保持 disabled 等上游适配(本机实测仅补 inject 仍失败);**启用任何第三方插件前先跑隔离 boot 测试**,见 fix-patterns.md 模式 4 |
 
 ## 3. 模型 / Provider
 

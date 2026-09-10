@@ -1,0 +1,23 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Deterministic selftest (A-J)
+        run: node skills/dsh-update-guide/scripts/selftest.mjs
+      - name: Embedded gate copies vs owner (drift check)
+        run: node skills/dsh-update-guide/scripts/sync-gates.mjs --check
+      - name: install.sh syntax
+        run: bash -n install.sh

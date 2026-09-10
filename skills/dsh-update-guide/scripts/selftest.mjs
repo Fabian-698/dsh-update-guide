@@ -8,6 +8,7 @@
  *   E v2/v3 fixtures 经薄壳验证 ALL PASS   F 目录发现优先 V3 文件
  *   H S1 活跃 turn 判定（in-flight WARN / 已闭合 turn FAIL）
  *   I scan v0 迁移检查（提交区→blocker / 未提交尾部→warning）
+ *   J scan 严格 inject 检查（rpc.handle 缺 webServer→blocker / 已声明或裸调用→不误报）
  * --full 追加：scan-upgrade --json 必须无 blocker 且未被版本门控跳过。
  *
  * 用法：node scripts/selftest.mjs [--full]   退出码 0=PASS 1=FAIL
@@ -30,7 +31,7 @@ const fail = (id, msg) => { failed++; console.log('FAIL ' + id + '  ' + msg) }
 const skip = (id, msg) => console.log('SKIP ' + id + '  ' + msg)
 
 // A. 语法
-const scripts = ['scan-upgrade.mjs', 'fix-model-refs.mjs', 'repair-v0-sessions.mjs', 'verify-session.mjs', 'verify-patch.mjs', 'verify-patch-surface.mjs', 'sync-gates.mjs']
+const scripts = ['scan-upgrade.mjs', 'fix-model-refs.mjs', 'repair-v0-sessions.mjs', 'test-plugin-boot.mjs', 'verify-session.mjs', 'verify-patch.mjs', 'verify-patch-surface.mjs', 'sync-gates.mjs']
 for (const s of scripts) {
   const p = join(here, s)
   if (!existsSync(p)) { fail('A', s + ' 不存在'); continue }
@@ -202,6 +203,44 @@ else {
     else fail('I', '尾部违规未按 warning: status=' + b.status + ' issue=' + JSON.stringify(b.issue).slice(0, 200))
   } catch (e) {
     fail('I', '迁移检查用例失败: ' + String(e && e.message ? e.message : e))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// J. scan 的 0.1.5 严格 inject 检查：ctx.connection.rpc 缺 webServer → blocker；已声明/裸调用 → 不误报
+{
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-inject-'))
+  const home = join(dir, 'home')
+  const pkgDir = join(home, 'plugins', 'audit-fixture')
+  mkdirSync(join(pkgDir, 'lib'), { recursive: true })
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'audit-fixture', version: '1.0.0' }))
+  const file = join(pkgDir, 'lib', 'index.js')
+  const injectLine = names => 'var inject = [' + names.map(n => '"' + n + '"').join(', ') + '];'
+  const scan = () => {
+    const r = spawnSync(process.execPath, [join(here, 'scan-upgrade.mjs'), '--dsh-home', home, '--json'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 60000 })
+    let j = null
+    try { j = JSON.parse(r.stdout || '{}') } catch { /* 输出异常时留空 */ }
+    return { status: r.status, source: (j?.issues || []).filter(i => i.category === 'source') }
+  }
+  try {
+    // J1：直接调用 ctx.connection.rpc.handle 且 inject 缺 webServer → blocker(整棵插件树起不来)
+    writeFileSync(file, injectLine(['connection', 'loader', 'tools']) + '\nfunction apply(ctx) { ctx.connection.rpc.handle("/x", () => {}); }\nexport { apply, inject };\n')
+    const j1 = scan()
+    if (j1.status === 1 && j1.source.some(i => i.severity === 'blocker' && /webServer/.test(i.detail))) pass('J', 'rpc.handle 缺 webServer inject → blocker')
+    else fail('J', '缺 webServer 未报 blocker: status=' + j1.status + ' ' + JSON.stringify(j1.source).slice(0, 200))
+    // J2：inject 已含 webServer → 不报 blocker
+    writeFileSync(file, injectLine(['connection', 'loader', 'tools', 'webServer']) + '\nfunction apply(ctx) { ctx.connection.rpc.handle("/x", () => {}); }\nexport { apply, inject };\n')
+    const j2 = scan()
+    if (j2.status === 0 && !j2.source.some(i => i.severity === 'blocker')) pass('J', '已声明 webServer → 不误报 blocker')
+    else fail('J', '已声明 webServer 仍报 blocker: status=' + j2.status + ' ' + JSON.stringify(j2.source).slice(0, 200))
+    // J3：裸 connection.rpc.handle(helper 形态, mnemon 类调用) → 不误报
+    writeFileSync(file, injectLine(['tools']) + '\nfunction wire(connection) { connection.rpc.handle("/x", () => {}); }\nexport { wire, inject };\n')
+    const j3 = scan()
+    if (j3.status === 0 && !j3.source.some(i => i.severity === 'blocker')) pass('J', '裸 connection.rpc.handle 不误报')
+    else fail('J', '裸调用被误报: status=' + j3.status + ' ' + JSON.stringify(j3.source).slice(0, 200))
+  } catch (e) {
+    fail('J', '严格 inject 用例失败: ' + String(e && e.message ? e.message : e))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
