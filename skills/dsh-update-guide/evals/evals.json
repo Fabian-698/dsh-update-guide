@@ -18,6 +18,12 @@
       "prompt": "会话一打开就报 UNKNOWN_MODEL，怎么批量把它们切到 deepseek-flash？",
       "expected_output": "先确认迁移层没问题（scan migration），再 fix-model-refs.mjs --list → --dry-run → 带 token-file 执行；说明 selectModel 会同时写全局默认模型",
       "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "升级到 0.1.5-rc.1 后，我想把之前禁用的第三方插件重新启用，先帮我确认哪些能用、哪些不能用",
+      "expected_output": "先看 scan-upgrade.mjs 的 source 分类（含 connection.rpc.handle 缺 webServer inject 模式），再用 test-plugin-boot.mjs 做隔离启动测试得到不兼容清单（如 @js2hou/dsh-mcp-manager 报 cannot get property \"webServer\" without inject，需保持 disabled），其余插件给出可启用结论",
+      "files": []
     }
   ]
 }

@@ -239,6 +239,11 @@ else {
     const j3 = scan()
     if (j3.status === 0 && !j3.source.some(i => i.severity === 'blocker')) pass('J', '裸 connection.rpc.handle 不误报')
     else fail('J', '裸调用被误报: status=' + j3.status + ' ' + JSON.stringify(j3.source).slice(0, 200))
+    // J4：浏览器半边 ctx.connection.rpc.call(如 dsh-pocket/client) → 不误报
+    writeFileSync(file, injectLine(['slots']) + '\nfunction read(ctx) { return ctx.connection.rpc.call("/x", "read", {}); }\nexport { read, inject };\n')
+    const j4 = scan()
+    if (j4.status === 0 && !j4.source.some(i => i.severity === 'blocker')) pass('J', '客户端 rpc.call 不误报')
+    else fail('J', '客户端 rpc.call 被误报: status=' + j4.status + ' ' + JSON.stringify(j4.source).slice(0, 200))
   } catch (e) {
     fail('J', '严格 inject 用例失败: ' + String(e && e.message ? e.message : e))
   } finally {

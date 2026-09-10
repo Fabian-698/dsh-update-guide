@@ -21,7 +21,8 @@ metadata:
 |---|---|---|
 | dsh | **0.1.2-rc.1 → 0.1.5-rc.1**(含端点);区间外只做人工判定,`scan-upgrade.mjs` 会先打印检测版本并按版本选检查集 | `dsh --version` |
 | 升级链路 | 0.1.2-rc.1 → 0.1.3-alpha.1 → 0.1.3-alpha.2 → 0.1.5-alpha.1 → 0.1.5-alpha.2 → 0.1.5-rc.1(GitHub 上**无 0.1.4、无 0.1.5-rc.2**) | `git fetch --tags && git tag -l 'dsh-v0.1.*'` |
-| Node | ≥ 18;全部脚本为 Node ESM,**只用 `node:` 内建模块,无第三方依赖** | `node -v` |
+| Node | **≥ 22.15**;`selftest.mjs` / `repair-v0-sessions.mjs` 用 `node:zlib` 的 `zstdCompressSync`(22.15 / 23.8 起提供),其余脚本为 Node ESM、只用 `node:` 内建、无第三方 npm 依赖 | `node -v` |
+| zstd CLI | **必需**:会话日志是 zstd 容器,`scan-upgrade` / `verify-session` / `fix-model-refs` / `repair-v0-sessions` 都靠它解压(缺失时相关检查降级为 warning / SKIP,不会假绿) | `zstd --version` |
 | 本技能 | 自足:体检/修复/boot 测试/自测/闸门都在本目录内;闸门副本在 `scripts/gates/` | `node scripts/selftest.mjs`、`node scripts/sync-gates.mjs --check` |
 | 兄弟技能(推荐同装) | `dsh-foundations`(必读背景)、`dsh-session-logs`(verify-session owner)、`dsh-config-assembly`(verify-patch / verify-patch-surface owner)、`dsh-run`(启动与 dshmarket 重启);装在同一技能树目录下 | 与 `~/.dsh/skills/` 同级;缺失只影响 owner 解析,本技能仍可独立跑通(走 `scripts/gates/`) |
 | 会话格式 | v0/v2 = `session.jsonl.zstd`;v3 = `session.v3.jsonl.zstd`(header `"version":3`);**V3 不可降级读取**,回退旧版前必须备份 | `node scripts/verify-session.mjs --all`(S12) |

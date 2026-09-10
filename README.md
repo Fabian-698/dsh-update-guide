@@ -29,7 +29,8 @@ DeepSeek Harness（dsh）**升级与升级后断链修复**的执行型技能（
 |---|---|---|
 | dsh | **0.1.2-rc.1 → 0.1.5-rc.1**（含端点）；区间外只做人工判定，体检脚本按版本选检查集 | `dsh --version` |
 | 升级链路 | 0.1.2-rc.1 → 0.1.3-alpha.1 → 0.1.3-alpha.2 → 0.1.5-alpha.1 → 0.1.5-alpha.2 → 0.1.5-rc.1（GitHub 上**无 0.1.4、无 0.1.5-rc.2**） | `git fetch --tags && git tag -l 'dsh-v0.1.*'` |
-| Node | ≥ 18；脚本为 Node ESM，**只用 `node:` 内建模块，无第三方依赖** | `node -v` |
+| Node | **≥ 22.15**；`selftest.mjs` / `repair-v0-sessions.mjs` 用 `node:zlib` 的 `zstdCompressSync`（22.15 / 23.8 起提供），其余脚本只用 `node:` 内建模块、无第三方 npm 依赖 | `node -v` |
+| zstd CLI | **必需**：会话日志是 zstd 容器，`scan-upgrade` / `verify-session` / `fix-model-refs` / `repair-v0-sessions` 都靠它解压（缺失时相关检查降级为 warning / SKIP，不会假绿） | `zstd --version` |
 | 本技能 | 自足：体检/修复/boot 测试/自测/闸门都在技能目录内；闸门副本已内置在 `scripts/gates/` | `node scripts/selftest.mjs`、`node scripts/sync-gates.mjs --check` |
 | 兄弟技能（推荐同装） | `dsh-foundations`（必读背景）、`dsh-session-logs`（verify-session owner）、`dsh-config-assembly`（verify-patch / verify-patch-surface owner）、`dsh-run`（启动与 dshmarket 重启） | 装在同一技能树目录下；缺失只影响 owner 解析，本技能仍可独立跑通 |
 | 会话格式 | v0/v2 = `session.jsonl.zstd`；v3 = `session.v3.jsonl.zstd`（header `"version":3`）；**V3 不可降级读取**，回退旧版前必须备份 | `node scripts/verify-session.mjs --all`（S12） |
@@ -135,7 +136,7 @@ node $SKILL/scripts/verify-patch.mjs --profile web --diff-default
 ## 兼容性与纪律
 
 - 目标区间：**dsh 0.1.2-rc.1 → 0.1.5-rc.1**；`scan-upgrade.mjs` 会先打印检测到的版本，区间外只做人工判定。
-- Linux/macOS，Node ≥ 18；除 `repair-v0-sessions.mjs --apply`（强制 `sessions.bak-*` 备份 + 离线全链校验 + 逐文件原子替换）外，所有脚本对 `~/.dsh/sessions` **只读**；`fix-model-refs.mjs` 只走 RPC，不直接改日志文件。
+- Linux/macOS，**Node ≥ 22.15**，需要 **zstd CLI**（`zstd --version` 可用；会话日志是 zstd 容器，缺了只能跑模型引用与配置部分）；除 `repair-v0-sessions.mjs --apply`（强制 `sessions.bak-*` 备份 + 离线全链校验 + 逐文件原子替换）外，所有脚本对 `~/.dsh/sessions` **只读**；`fix-model-refs.mjs` 只走 RPC，不直接改日志文件。
 - `test-plugin-boot.mjs` 只读真实 `~/.dsh`（复制 profile 到 0700 临时目录、软链 node_modules），退出即删；`--keep` 保留现场用于排查。
 - 升级/迁移期间**不要手改会话日志、不要重命名或删除迁移产物**（v2 原文件 + v3 后继都保留）；停 GUI 走 dshmarket 的 `/dsh-market/restart`，不要裸 kill、不要删 `session.lock`。
 - 仓库不含任何凭据；cookie / token 由运行时通过文件或 `DSH_TOKEN` 提供（cookie 等同完整 API 凭据，用完即删）。

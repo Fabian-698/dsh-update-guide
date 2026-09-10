@@ -106,16 +106,23 @@ if [ -n "$missing" ]; then
   say "       闸门将使用内置副本 scripts/gates/;想要 owner 版请把技能族装到同一目录(见 SKILL.md 的「版本与依赖」)。"
 fi
 
-if [ "$RUN_TEST" = 1 ] && [ "$DRY_RUN" != 1 ]; then
-  if command -v node >/dev/null 2>&1; then
-    say "[自测] node scripts/selftest.mjs"
-    if ( cd "$TARGET" && node scripts/selftest.mjs ); then
-      say "[自测] ALL PASS"
-    else
-      say "[警告] 自测未全过,请检查 Node 版本(需 >= 18)。"
-    fi
+if command -v node >/dev/null 2>&1; then
+  node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  node_minor="$(node -p 'process.versions.node.split(".")[1]' 2>/dev/null || echo 0)"
+  if [ "$node_major" -lt 22 ] || { [ "$node_major" -eq 22 ] && [ "$node_minor" -lt 15 ]; }; then
+    say "[警告] 当前 Node $(node -v),技能需要 >= 22.15(node:zlib 的 zstd API);自测可能失败。"
+  fi
+else
+  say "[警告] 未找到 node,跳过自测(技能需要 Node >= 22.15)。"
+fi
+command -v zstd >/dev/null 2>&1 || say "[警告] 未找到 zstd CLI:会话日志解压相关检查会降级(warning / SKIP);安装 zstd 后重跑。"
+
+if [ "$RUN_TEST" = 1 ] && [ "$DRY_RUN" != 1 ] && command -v node >/dev/null 2>&1; then
+  say "[自测] node scripts/selftest.mjs"
+  if ( cd "$TARGET" && node scripts/selftest.mjs ); then
+    say "[自测] ALL PASS"
   else
-    say "[警告] 未找到 node,跳过自测(技能脚本需要 Node >= 18)。"
+    say "[警告] 自测未全过,请检查 Node 版本(需 >= 22.15)与 zstd CLI。"
   fi
 fi
 

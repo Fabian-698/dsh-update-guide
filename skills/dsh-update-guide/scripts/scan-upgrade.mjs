@@ -183,7 +183,7 @@ const PATTERNS = [
     fix: '0.1.5 Detail 面板已移除, 能力迁至右侧 Sidebar；改用 sidebar/详情视图扩展点',
   },
   {
-    name: 'connection.rpc.handle 缺 webServer inject', re: /ctx\s*\.\s*connection\s*\.\s*rpc\b/g, adapter: ['webServer'],
+    name: 'connection.rpc.handle 缺 webServer inject', re: /ctx\s*\.\s*connection\s*\.\s*rpc\s*\.\s*handle\s*\(/g, adapter: ['webServer'],
     severity: 'blocker', since: '0.1.5-rc.1',
     adapterNote: '已声明 webServer',
     adapterFix: '文件已出现 webServer(inject 通常已含), 静态判定非断链; 仍建议跑 test-plugin-boot.mjs 确认',

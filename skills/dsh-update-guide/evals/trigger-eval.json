@@ -40,6 +40,14 @@
     "should_trigger": true
   },
   {
+    "query": "升级后我想把之前禁用的第三方插件重新启用，先帮我确认哪些插件能用、哪些不能用",
+    "should_trigger": true
+  },
+  {
+    "query": "dsh web 启动报 plugin tree failed to load ... cannot get property \"webServer\" without inject，是哪个插件的问题",
+    "should_trigger": true
+  },
+  {
     "query": "帮我看看 ~/.dsh/sessions 里这个会话的事件流，分析模型都看到了什么",
     "should_trigger": false
   },

@@ -95,6 +95,7 @@ pnpm build:web       # 若使用浏览器 GUI
 - [ ] 自定义日志读取器/插件已适配 V3,优先读 session.v3.jsonl.zstd——#1、fix-patterns 模式 7
 - [ ] 插件不再依赖 `ctx.agent`,改用显式传入的 Agent——#4
 - [ ] 插件不再使用旧 `conversation` Slot,改用 `main.conversation`;Detail 交互迁 Sidebar——#7
+- [ ] 启用第三方插件前跑过隔离 boot 测试(`test-plugin-boot.mjs`),无 quarantine;服务 inject 类崩溃已排除——#18 / fix-patterns 模式 4
 - [ ] 若依赖 `str_replace_editor`,确认已显式启用——#3
 - [ ] 自定义 persona 已按 prefix/suffix 拆分——#6
 - [ ] 不再从普通 subprocess handle 读取 `pid`——#11
