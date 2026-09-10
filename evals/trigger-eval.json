@@ -1,0 +1,74 @@
+[
+  {
+    "query": "我刚把 dsh 升级到 0.1.5-rc.1，现在有几个旧会话打不开了，帮我检查一下",
+    "should_trigger": true
+  },
+  {
+    "query": "dsh upgrade broke my sessions, resume failed with refuses this format v0 Session",
+    "should_trigger": true
+  },
+  {
+    "query": "怎么把 dsh 从 0.1.2 升级到 0.1.5？升级前要备份什么？",
+    "should_trigger": true
+  },
+  {
+    "query": "how to upgrade dsh from 0.1.2 to 0.1.5 step by step",
+    "should_trigger": true
+  },
+  {
+    "query": "升级 dsh 后插件报 ctx.agent is not a function，preset 也起不来",
+    "should_trigger": true
+  },
+  {
+    "query": "会话里全是 UNKNOWN_MODEL，帮我把它们批量切到 deepseek-flash",
+    "should_trigger": true
+  },
+  {
+    "query": "verify-session 报 S8 未知事件类型 model/selection，是日志坏了吗",
+    "should_trigger": true
+  },
+  {
+    "query": "dsh 升级后 cordis.patch.yml 有 entry not found，清理一下死干预行",
+    "should_trigger": true
+  },
+  {
+    "query": "帮我跑一下 dsh 的升级体检，看看有没有要修的",
+    "should_trigger": true
+  },
+  {
+    "query": "dsh sessions 迁移到 V3 之后旧会话还能不能回退旧版本",
+    "should_trigger": true
+  },
+  {
+    "query": "帮我看看 ~/.dsh/sessions 里这个会话的事件流，分析模型都看到了什么",
+    "should_trigger": false
+  },
+  {
+    "query": "写一个 dsh 插件，包含 host 和 client 两端",
+    "should_trigger": false
+  },
+  {
+    "query": "pnpm update 把所有依赖升到最新，顺便清理 lockfile",
+    "should_trigger": false
+  },
+  {
+    "query": "帮我把 cordis.patch.yml 里加一个新的 MCP server 配置",
+    "should_trigger": false
+  },
+  {
+    "query": "dsh 0.1.5 有什么新功能？跟 0.1.2 比 UI 变化大吗",
+    "should_trigger": false
+  },
+  {
+    "query": "这个会话日志文件解压不了，帮我修一下 zstd 文件",
+    "should_trigger": false
+  },
+  {
+    "query": "dsh web 启动时报端口被占用，怎么换端口",
+    "should_trigger": false
+  },
+  {
+    "query": "帮我写一个 skill 来管理我的读书笔记",
+    "should_trigger": false
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "skill_name": "dsh-update-guide",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "dsh 刚升级到 0.1.5-rc.1，帮我看看现在有哪些东西需要修？",
+      "expected_output": "运行 scan-upgrade.mjs 输出 7 类检查结果（blocker/warning/info），先处理 v0 迁移/migration blocker，再模型/配置/插件，最后双闸门验证",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "升级后有几个旧会话打不开，报 resume failed ... refuses this format v0 Session，怎么修？",
+      "expected_output": "先备份非空 sessions.bak-*；用 repair-v0-sessions.mjs --list 预览，--apply 修复三类旧形态；再用 scan 确认 migration=ok、verify-session 复核",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "会话一打开就报 UNKNOWN_MODEL，怎么批量把它们切到 deepseek-flash？",
+      "expected_output": "先确认迁移层没问题（scan migration），再 fix-model-refs.mjs --list → --dry-run → 带 token-file 执行；说明 selectModel 会同时写全局默认模型",
+      "files": []
+    }
+  ]
+}

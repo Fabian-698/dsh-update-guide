@@ -1,4 +1,4 @@
-# dsh 0.1.2-rc.1 破坏性变更(逐条核对版)
+# dsh 0.1.2-rc.1 破坏性变更(0.1.2 代,逐条核对版)
 
 来源:官方发布说明(dsh-v0.1.2-rc.1,自 v0.1.1-rc.2 以来汇总)+ 本机 2026-09-06 全量排查实测。
 每条列:变更 → 影响面 → 判定方法 → 修复。★=本机实战确认踩过。
@@ -19,8 +19,8 @@
 
 | # | 变更 | 影响面 | 判定 | 修复 |
 |---|---|---|---|---|
-| ★8 | `sourceEventSeqs` 新增 range-pairs 编码 `[[19,638]]`(旧数组形态仍合法) | **只影响校验工具**,harness 本身兼容 | verify-session S10 报 `refs=19,638` 成对值 = 工具没更新 | 用本技能内置 verify-session(已支持两种形态) |
-| ★9 | 会话日志新增事件类型:model/selection、plan/mode、hook/invoked、hook/result、schedule/change、feedback/record、compaction/prune、team/member、team/task、subagent/model-selection-policy、session-log-deepseek/delivery-accepted、tool-workflow/(agent-end|agent-start|run-end|run-start) | **只影响工具快照**;harness 认这些类型 | verify-session S8 报上述 = 快照旧 | 内置版已含全集 |
+| ★8 | `sourceEventSeqs` 新增 range-pairs 编码 `[[19,638]]`(旧数组形态仍合法) | **只影响校验工具**,harness 本身兼容 | verify-session S10 报 `refs=19,638` 成对值 = 工具没更新 | 用本技能 shim verify-session(解析到 owner 最新版,已支持两种形态) |
+| ★9 | 会话日志新增事件类型:model/selection、plan/mode、hook/invoked、hook/result、schedule/change、feedback/record、compaction/prune、team/member、team/task、subagent/model-selection-policy、session-log-deepseek/delivery-accepted、tool-workflow/(agent-end|agent-start|run-end|run-start) | **只影响工具快照**;harness 认这些类型 | verify-session S8 报上述 = 快照旧 | owner 版 KNOWN_TYPES 已含全集(本技能 shim 解析到它) |
 | ★10 | 故事类:旧 `code mode` 更名 `ptc mode`(会话记录仍可读) | 无(只读兼容) | — | — |
 | 11 | SQLite Session 持久化后端移除 | 配了 sqlite 后端的部署 | settings/patch grep sqlite | 用 JSONL(默认);旧内容用旧版本导出 |
 
