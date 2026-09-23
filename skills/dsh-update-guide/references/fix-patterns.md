@@ -172,7 +172,7 @@ disabled 时降为 warning)。
 
 **定位**:错误信息直接给出缺失 preset 名;统计各会话引用了哪些已删 preset:
 ```bash
-# v2/v3 两个文件都查(v3 优先);目录名含 workspace 编码,路径按实际替换
+# 旧 v2 与 v3 两个文件都查(权威文件按 V4 > V3 > V2);目录名含 workspace 编码,路径按实际替换
 zstd -dc <会话目录>/session.v3.jsonl.zstd 2>/dev/null | grep -aoE '"(router-[a-z]*|code)"'
 zstd -dc <会话目录>/session.jsonl.zstd   | grep -aoE '"(router-[a-z]*|code)"' | sort | uniq -c
 ```
@@ -361,7 +361,7 @@ Python `sdk-minimal` 默认**仅提供持久 shell**,`str_replace_editor` 需**�
 
 **定位**:
 ```bash
-# 看某个会话请求头里的工具清单(v3 优先)
+# 看某个会话请求头里的工具清单(权威文件按 V4 > V3 > V2)
 zstd -dc <会话目录>/session.v3.jsonl.zstd 2>/dev/null | grep 'request/header' | tail -1
 # 看 preset/装配
 node <skill>/scripts/scan-upgrade.mjs --profile web

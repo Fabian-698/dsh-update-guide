@@ -1,6 +1,6 @@
 ---
 name: dsh-update-guide
-description: 指导并修复 DeepSeek Harness (dsh) 升级(0.1.2-rc.1 → 0.1.7-rc.1)与升级后断链:备份→切 tag→pnpm install/build→dshmarket 重启;故障定位与修复。典型症状:旧会话打不开、Unknown agent preset(0.1.7 起 ~/.dsh/.agent-presets/ 不再被读取,预设须声明 preset-* 行)、UNKNOWN_MODEL(0.1.6-alpha.2 起内置 deepseek-official 只剩 deepseek-flash/deepseek-v4-pro)、session.events/snapshotEvents 崩溃、Session V4(session.v4.jsonl.zstd, header version:4)与 V3 格式、v0 迁移被拒(refuses this format v0 Session)、ctx.agent 移除与插件不兼容(含 0.1.5 inject 缺失致启动即崩)、workflow-worker-thread→workflow-ptc、Team spawn_teammate、maxInlineBytes→maxInlineTokens、verify-session S8/S12、配置死干预。刚升级 dsh 或问「怎么升级 dsh / 升级后旧会话打不开 / UNKNOWN_MODEL / 预设失效」时,先跑一键体检 scan-upgrade.mjs(版本感知),修完用双闸门 verify-session + verify-patch 确认归零。纯日志分析走 dsh-session-logs,纯配置装配走 dsh-config-assembly,普通依赖更新不适用。English — upgrade dsh, sessions won't open after upgrade, resume failed, Unknown agent preset, UNKNOWN_MODEL, V3/V4 session format, session.v4.jsonl.zstd, ctx.agent, plugin incompatible.
+description: 修复 dsh(DeepSeek Harness)升级后的断链与打不开的会话,覆盖 0.1.2-rc.1 → 0.1.7-rc.1。English triggers — upgrade dsh, sessions won't open after upgrade, resume failed, Unknown agent preset, UNKNOWN_MODEL, session.events, snapshotEvents, V3/V4 session format, session.v4.jsonl.zstd, ctx.agent, plugin incompatible, dsh upgrade health scan. 升级流程:备份→切 tag→pnpm install/build→dshmarket 重启。典型症状:旧会话打不开、Unknown agent preset(0.1.7 起 ~/.dsh/.agent-presets/ 不再被读取,预设须声明 preset-* 行)、UNKNOWN_MODEL(0.1.6-alpha.2 起内置 deepseek-official 只剩 deepseek-flash/deepseek-v4-pro)、session.events/snapshotEvents 崩溃、Session V4(session.v4.jsonl.zstd, header version:4)与 V3 格式、v0 迁移被拒(refuses this format v0 Session)、ctx.agent 移除与插件不兼容(含 0.1.5 inject 缺失致启动即崩)、workflow-worker-thread→workflow-ptc、Team spawn_teammate、maxInlineBytes→maxInlineTokens、verify-session S8/S12、配置死干预。刚升级 dsh 或问「怎么升级 dsh / 升级后旧会话打不开 / UNKNOWN_MODEL / 预设失效」时,先跑一键体检 scan-upgrade.mjs(版本感知),修完用双闸门 verify-session + verify-patch 确认归零。纯日志分析走 dsh-session-logs,纯配置装配走 dsh-config-assembly,普通依赖更新不适用。
 license: MIT
 metadata:
   repository: https://github.com/Fabian-698/dsh-update-guide
@@ -42,7 +42,7 @@ dsh 的 **0.1.2-rc.1** 与 **0.1.5-rc.1** 各有一批不兼容改动(0.1.5-rc.1
 - 会话日志升到 **V3**(`session.v3.jsonl.zstd`,header `"version":3`),旧读取器读不到/读旧文件 → 误判
 - 自家校验工具没跟上新格式 → **误报**未知事件类型(0.1.2 的 S8/S10,0.1.5 的 S8);**S12 FAIL 不是误报**——v3 文件名与 header version 不一致是真问题(仅"旧文件名 + version=3"为 WARN)
 - 旧 v0 会话被 0.1.5 迁移器的**冻结校验**拒绝 → 打开即 `resume failed`(插件消息 summary、descriptor v2、平铺 replayState;见第 0 步)
-- **0.1.7 起会话 header 引用的 preset 不在装配树** → 打开即 `Unknown agent preset`(0.1.7 不再读 `~/.dsh/.agent-presets/`;见第 0.5 步,本机 137 个顶层会话里 73 个命中)
+- **0.1.7 起会话 header 引用的 preset 不在装配树** → 打开即 `Unknown agent preset`(0.1.7 不再读 `~/.dsh/.agent-presets/`;见第 0.5 步;本机 2026-09-23 修复前基线为 137 个顶层会话里 73 个命中,在装配树声明 4 个 preset-* 行后已归零)
 - **0.1.7 起会话升到 V4**、模型声明来源改到 Profile patch、内置模型集缩减 → 旧读取器/校验器"看不见新格式、读空配置、把已移除模型当合法"(见第 2 步与第 5 步)
 
 核心原则:**先体检定位 → 逐项修复 → 双闸门验证**。不要凭症状猜——同一症状(打不开会话)可能来自
@@ -272,7 +272,7 @@ node <skill>/scripts/verify-patch.mjs --profile web --diff-default
 - 第三方扩展事件类型用 `--ignore-type t1,t2`;`--lenient-unknown` 降为 warn。
 - **两个都 ALL PASS 才算修完;有 FAIL 禁止重启**(带损坏日志重启可能让 session 列表整体 500,先修再启)。
   若环境受限导致 dump-config 报 EROFS,按脚本提示在用户终端或更高权限下重跑。
-- 改动本技能的脚本/事件表/闸门后,先跑确定性自测,再跑双闸门(自测覆盖 A 语法/B 事件表一致/C 内置模型 id/D 闸门解析/E fixtures 回归/F V3 优先/H S1 判定/I migration 判定/J 严格 inject 判定;`--full` 追加真实体检):
+- 改动本技能的脚本/事件表/闸门后,先跑确定性自测,再跑双闸门(自测覆盖 A 语法/B 事件表一致/C 内置模型 id/D 闸门解析/E fixtures 回归/F V3 优先/H S1 判定/I migration 判定/J 严格 inject 判定/K V4+preset 核对/L 模型目录回退;`--full` 追加真实体检与"本机 0 blocker"断言):
   ```bash
   node <skill>/scripts/selftest.mjs          # 快速档(不扫描真实会话)
   node <skill>/scripts/selftest.mjs --full   # 追加真实 scan-upgrade --json(要求无 blocker 且未被版本门控跳过)
@@ -324,6 +324,7 @@ node <skill>/scripts/verify-patch.mjs --profile web --diff-default
 - **`workflow-worker-thread`→`workflow-ptc`**、**`agent/session-start`→`agent/created`**、**Team 用 `spawn_teammate`**、
   **`maxInlineBytes`→`maxInlineTokens`**、**默认关 Ralph、移除 E2B**:见 `references/breaking-changes-0.1.7.md`。
 - **插件安装/启动新增 DSH 版本兼容性检查**(0.1.7-rc.1):第三方插件声明不匹配会被拒,先升级插件。
+- **权限预设的保留名 `auto` / `custom`**:`dsh-permission-presets` 禁止在 preset 表里使用这两个名字(0.1.7 起实验性 Auto review 集成占用 `auto`)。profile 的 `permission.presets` 里若出现会在挂载时直接抛错,升级后请改名。
 
 ## 其他设备快速复制
 
@@ -331,7 +332,7 @@ node <skill>/scripts/verify-patch.mjs --profile web --diff-default
    `dsh-run` 与本技能同装 —— 闸门 owner 与依赖解析都在,shim 直接可用。
 2. 只带本技能时:**先在仍装有技能族的机器上**执行 `node <skill>/scripts/sync-gates.mjs --embed`(把 owner 版闸门复制到本技能 `scripts/gates/`),
    **然后整体复制本技能目录(含 `scripts/gates/`)**到目标机。目标机上 `scan-upgrade` / `fix-model-refs` / `repair-v0-sessions` 可完整使用;
-   selftest 的 E/F/H 会因 owner 缺失而 FAIL/SKIP,属预期(K/L 用合成 home + 假 dsh,不依赖 owner)。目标机流程:scan → `repair-v0-sessions.mjs --list/--apply`(迁移 blocker)→ `fix-model-refs.mjs`(模型)。
+   selftest 的 E/F/H 会退回本技能 `scripts/gates/` 的内置副本(按指引带 `gates/` 整体复制时应 PASS);只有 owner↔gates 漂移校验(`sync-gates.mjs --check`)在无 owner 时降级。K/L 用合成 home + 假 dsh,完全不依赖 owner。目标机流程:scan → `repair-v0-sessions.mjs --list/--apply`(迁移 blocker)→ `fix-model-refs.mjs`(模型)。
    `--check` 用于校验内置副本与 owner 是否漂移。
 3. 修完跑双闸门 → ALL PASS → 重启 dsh web → 打开一个旧会话抽查(V4 会话优先)。
 4. 本技能脚本风格:Node ESM、只允许 `node:` 内建模块、无第三方依赖;注释/报错信息用中文;
@@ -350,4 +351,7 @@ node <skill>/scripts/verify-patch.mjs --profile web --diff-default
 - `scripts/sync-gates.mjs` — 闸门副本同步与漂移校验(`--list` / `--embed` / `--check`);`--embed` 用于本技能独立复制到别的机器
 - 闸门 owner:`../dsh-session-logs/SKILL.md`(verify-session)、`../dsh-config-assembly/SKILL.md`(verify-patch / verify-patch-surface)
 - 相关技能:`../dsh-foundations/SKILL.md`(必读背景)、`../dsh-run/SKILL.md`、`../dsh-session-logs/SKILL.md`、`../dsh-config-assembly/SKILL.md`
+- `scripts/scan-upgrade.mjs` — 一键体检(版本分段选检查集;`--json` 机器可读)
+- `scripts/fix-model-refs.mjs` — 批量切换失效模型(`--list` / `--dry-run` / 切到并集内的 provider+model)
+- `scripts/verify-session.mjs`、`scripts/verify-patch.mjs`、`scripts/verify-patch-surface.mjs` — 解析到 owner 的闸门 shim(owner 缺失时回退内置 `scripts/gates/`)
 - `evals/` — 触发与任务评测集(`evals.json` + `trigger-eval.json`),可用 skill-creator 的 eval-viewer 复核

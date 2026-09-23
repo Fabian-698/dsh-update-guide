@@ -16,8 +16,8 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const skillRoot = resolve(here, '..')
 const candidates = [
-  join(here, 'gates', 'verify-session.mjs'),
   join(skillRoot, '..', 'dsh-session-logs', 'scripts', 'verify-session.mjs'),
+  join(here, 'gates', 'verify-session.mjs'),
 ]
 const target = candidates.find(p => existsSync(p))
 if (!target) {

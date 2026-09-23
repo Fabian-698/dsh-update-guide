@@ -32,7 +32,7 @@
 
 | # | 变更 | 影响面 | 判定 | 修复 |
 |---|---|---|---|---|
-| ★★3 | **`~/.dsh/.agent-presets/<id>/` 目录不再被任何代码读取**(官方原文 "Nothing reads that directory any more.")。预设必须在装配树里声明为 Loader 行:`- id: preset-<id>` + `name: '@deepseek-ai/dsh-agent-preset'` + `config: { id, order, plugins: [...] }`(或做成 plugin bundle 安装)。设置页也移除了"复制/删除/打开目录"入口 | 所有引用旧目录 preset 的历史会话**打开即失败**:`RemoteError('agent-preset/not-found', 'Unknown agent preset: <id>')`。本机实测 137 个顶层会话里 **73 个**命中(含子代理共 413 个);本目录修复 3 个兼容桩后仍有 6 个顶层会话引用 `liangshen` | scan-upgrade 的 `preset` 分类(blocker):报"会话引用的 agent preset 未在装配树声明: <id>(顶层 N / 子代理 M)";声明集来自 `dsh --profile <p> --dump-config` 的 `- id: preset-*` 行的 `config.id`,并内置 standard/ptc/minimal/cordis;另见 `legacy-presets` 分类(旧目录残留逐 id 计数) | 按下面模板在 `profiles/<p>/cordis.patch.yml` 声明仍需使用的 preset,重启 dsh web(走 dshmarket);确认无会话引用后再删旧目录。见 fix-patterns.md 模式 16 |
+| ★★3 | **`~/.dsh/.agent-presets/<id>/` 目录不再被任何代码读取**(官方原文 "Nothing reads that directory any more.")。预设必须在装配树里声明为 Loader 行:`- id: preset-<id>` + `name: '@deepseek-ai/dsh-agent-preset'` + `config: { id, order, plugins: [...] }`(或做成 plugin bundle 安装)。设置页也移除了"复制/删除/打开目录"入口 | 所有引用旧目录 preset 的历史会话**打开即失败**:`RemoteError('agent-preset/not-found', 'Unknown agent preset: <id>')`。本机 2026-09-23 修复前基线为 137 个顶层会话里 **73 个**命中(含子代理共 413 个),其中 6 个引用 `liangshen`;在装配树声明 4 个 `preset-*` 行后本机已归零(scan 的 `preset` 分类报 ok) | scan-upgrade 的 `preset` 分类(blocker):报"会话引用的 agent preset 未在装配树声明: <id>(顶层 N / 子代理 M)";声明集来自 `dsh --profile <p> --dump-config` 的 `- id: preset-*` 行的 `config.id`,并内置 standard/ptc/minimal/cordis;另见 `legacy-presets` 分类(旧目录残留逐 id 计数) | 按下面模板在 `profiles/<p>/cordis.patch.yml` 声明仍需使用的 preset,重启 dsh web(走 dshmarket);确认无会话引用后再删旧目录。见 fix-patterns.md 模式 16 |
 
 声明模板(插件列表可直接复用当前 0.1.7 的规范 preset,避免踩"包名已改名"的坑):
 

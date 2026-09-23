@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "dsh 刚升级到 0.1.5-rc.1，帮我看看现在有哪些东西需要修？",
-      "expected_output": "运行 scan-upgrade.mjs 输出 7 类检查结果（blocker/warning/info），先处理 v0 迁移/migration blocker，再模型/配置/插件，最后双闸门验证",
+      "expected_output": "运行 scan-upgrade.mjs 输出 9 类检查结果（blocker/warning/info），先处理 v0 迁移/migration blocker，再模型/配置/插件，最后双闸门验证",
       "files": []
     },
     {
