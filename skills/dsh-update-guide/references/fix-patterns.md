@@ -1,7 +1,7 @@
 # 修复模式与验证命令
 
 每个问题 → 定位 → 修复示例 → 验证。前缀 ★ = 本机实战验证过的步骤。
-模式 1-6 针对 0.1.2 代断链,模式 7-15 针对 0.1.5 代(V3 格式与插件 API、v0 迁移修复)。
+模式 1-6 针对 0.1.2 代断链,模式 7-15 针对 0.1.5 代(V3 格式与插件 API、v0 迁移修复),模式 16-17 针对 0.1.7 代(声明式 preset、settings 单次导入)。
 闸门脚本已收归 owner:verify-session 规范版在 dsh-session-logs/scripts/,
 verify-patch(与 verify-patch-surface)规范版在 dsh-config-assembly/scripts/;
 本技能 scripts/ 下的是解析到 owner 的 shim,命令形态不变。
@@ -23,6 +23,8 @@ verify-patch(与 verify-patch-surface)规范版在 dsh-config-assembly/scripts/;
 - 模式 13:普通 subprocess pid 移除(0.1.5)★
 - 模式 14:session.lock / agent-busy 判因(0.1.5)★
 - 模式 15:v0 会话迁移被拒(打开即 resume failed)★(2026-09-10 实战)
+- 模式 16:preset 改由装配树声明(0.1.7,旧目录不再被读取)★
+- 模式 17:settings.yaml 只导入一次 → 配置改到 Profile patch(0.1.7)★
 - 双闸门解读(常见结果)
 
 ## 模式 1:preset/插件 `session.events` 断链 ★
@@ -56,14 +58,20 @@ curl -s -X POST http://127.0.0.1:3080/dsh-market/restart -H 'Origin: http://127.
 **定位**:
 ```bash
 node <skill>/scripts/scan-upgrade.mjs   # model 分类输出失效 provider/model
-# 或直接查会话 header(优先 v3 文件,见模式 7):
-zstd -dc <会话目录>/session.v3.jsonl.zstd 2>/dev/null | grep '"request/header"' | tail -1
-zstd -dc <会话目录>/session.jsonl.zstd   | grep '"request/header"' | tail -1
+# 或直接查会话 header(按 V4 > V3 > V2 选权威文件,见模式 7):
+for f in session.v4.jsonl.zstd session.v3.jsonl.zstd session.jsonl.zstd; do
+  [ -f "<会话目录>/$f" ] && zstd -dc "<会话目录>/$f" | grep '"request/header"' | tail -1 && break
+done
 ```
-判定规则:取最后一个 `model/selection`(没有则最后一个 `request/header`)里的 provider/model,
-与**并集**比对 = 内置 deepseek-official 集 ∪ settings.yaml `llm-deepseek.models` ∪ `llm-pi-ai.providers.<name>.models[*].id`。
+判定规则:取最后一个 `model/selection`(若有),否则最后一个 `request/header` 的 `data.header.config.provider/model`
+——与 dsh 的 `model-selection-projection`(next = pending ?? lastUsed)一致。
+与**并集**比对 = **当前版本的内置 deepseek-official 集** ∪ `llm-deepseek.models` ∪ `llm-pi-ai.providers.<name>.models[*].id`。
 子代理会话跳过(继承父会话模型;header 含 origin:"subagent"/kind:"subagent"/delegationDepth>0/有 parentSession)。
-真实案例:旧会话写 `ark-coding-plan/deepseek-v4-flash`,而 settings.yaml 里该 provider 已改名为
+
+**0.1.7 起的两个变化(沿用旧判定会误判)**:
+1. **声明来源变了**:模型清单在 **Profile 的 `cordis.patch.yml`**(0.1.7 起 settings.yaml 只导入一次并改名 `settings.yaml.imported`)。校验器应优先读 `profiles/<p>/cordis.patch.yml`,再 `dsh --profile <p> --dump-config`(补 bundle 声明),最后才回退 `settings.yaml` / `settings.yaml.imported`。读空的 settings.yaml 会把合法 provider/model 全判失效(本机旧 scan 26 条里 21 条是这种误报)。
+2. **内置集随版本缩减**:0.1.5 内置 4 个 id(deepseek-flash / deepseek-v4-flash / deepseek-v4-pro / deepseek-v4-flash-vision-exp)在 **0.1.6-alpha.2 缩减为 deepseek-flash + deepseek-v4-pro**。沿用 4 个 id 会把引用已移除模型的会话判成"合法"→ 假绿(本机实测 87 个顶层会话命中)。
+真实案例:旧会话写 `ark-coding-plan/deepseek-v4-flash`,而装配树里该 provider 已改名为
 `deepseek-v4-flash-ga-260731` → 名字对不上 → UNKNOWN_MODEL。
 
 **修复**(会话级,不动全局 settings、不改日志文件):
@@ -83,8 +91,9 @@ curl -s -b <cookie> -H 'Content-Type: application/json' -X POST http://127.0.0.1
   -d '{"type":"client-request","rpcId":"1","method":"session/selectModel","payload":{"args":{"request":{"sessionId":"<sid>","provider":"deepseek-official","model":"deepseek-flash","reasoningEffort":"high"}}}}'
 ```
 **建议先单会话试通,再批量**;目标模型必须在并集内(脚本会预检,不在则拒绝执行)。
-0.1.5 用户默认方案:**deepseek-official / deepseek-flash**(0.1.5 新默认、内置集固定);
-老会话若原先用 deepseek-v4-flash,也可继续切它。
+0.1.5 推荐目标:**deepseek-official / deepseek-flash**(0.1.5 新默认);
+**0.1.6-alpha.2 起 deepseek-v4-flash / deepseek-v4-flash-vision-exp 已不是合法目标**,要用 0.1.7 内置的
+deepseek-flash / deepseek-v4-pro,或装配树里真实声明且在用的 provider/model(本机现在是 opencode-go-oai/deepseek-v4.1-flash)。
 **注意 0.1.5 副作用**:selectModel 成功后同时写**全局默认模型**(脚本会打印提醒)——
 批量前想清楚全局默认要停在哪,不想动全局就在执行后改回。
 
@@ -177,22 +186,25 @@ cp $STD/agent.cordis.yml ~/.dsh/.agent-presets/<缺失名>/
 # preset.yml 写 name(加"兼容桩"标注)/description/order: 9x 放列表尾部
 ```
 **桩不能事后删**——删了这些会话立刻再次无法 resume。preset 目录启动时加载,建完必须重启 dsh web(走 dshmarket)。
+> **0.1.7 起这条老路失效**:`~/.dsh/.agent-presets/` 整个目录不再被读取,建桩也没用——必须改成装配树声明(模式 16)。
 本机案例:20 个会话分别引用已删的 `router-flash`(12)/`router-standard`(2)/`code`(6),建桩+重启后批量切换 20/20 成功。
 
 **验证**:重启后重跑 fix-model-refs(幂等,只切仍失效的)→ 0 失败;scan-upgrade 归零。
 
-## 模式 7:V3 日志读取器适配(0.1.5)★
+## 模式 7:V4/V3 日志读取器适配(0.1.5 / 0.1.7)★
 
 **背景**:0.1.2 的旧格式文件是 `session.jsonl.zstd`(header `"version":0`);0.1.5 的 V3 是
-`session.v3.jsonl.zstd`(header `"version":3`)。**新会话是 V3-only**;旧会话迁移后 **v2 原文件保留、v3 为后继**(本机已确认两者并存)。
-V3 **不支持降级读取**——旧版 dsh 读不了 v3。
+`session.v3.jsonl.zstd`(header `"version":3`);**0.1.7 的 V4 是 `session.v4.jsonl.zstd`(header `"version":4`)**。
+新会话是当前代-only;旧会话迁移后 **旧原文件保留、新版本文件为后继**(本机已确认 v2+v3、v2+v4 并存)。
+V3/V4 **都不支持降级读取**——旧版 dsh 读不了更高版本。
 
 **定位**:
 ```bash
-ls ~/.dsh/sessions/<workspace>/<sessionId>/          # 可能同时有 session.jsonl.zstd 与 session.v3.jsonl.zstd
+ls ~/.dsh/sessions/<workspace>/<sessionId>/          # 可能同时有 session.jsonl.zstd 与 session.v3/v4.jsonl.zstd
+zstd -dc <会话目录>/session.v4.jsonl.zstd 2>/dev/null | head -1   # {"type":"session","version":4,...}
 zstd -dc <会话目录>/session.v3.jsonl.zstd 2>/dev/null | head -1   # {"type":"session","version":3,...}
 zstd -dc <会话目录>/session.jsonl.zstd   | head -1                 # {"type":"session","version":0,...}
-node <skill>/scripts/scan-upgrade.mjs     # 输出 v2/v3 迁移进度统计
+node <skill>/scripts/scan-upgrade.mjs     # 输出 V4/V3/v2 迁移进度统计
 ```
 
 **修复示例**(Node ESM,最小改动读取端):
@@ -204,23 +216,24 @@ import { join } from 'node:path'
 // 旧:写死 v2 文件名
 // const file = join(sessionDir, 'session.jsonl.zstd')
 
-// 新:优先 v3,按 header version 分流
-const candidates = ['session.v3.jsonl.zstd', 'session.jsonl.zstd']
+// 新:按 V4 > V3 > V2 选权威文件,按 header version 分流
+const candidates = ['session.v4.jsonl.zstd', 'session.v3.jsonl.zstd', 'session.jsonl.zstd']
 const file = candidates.map(n => join(sessionDir, n)).find(existsSync)
 if (!file) throw new Error('会话日志不存在')
 
 const z = spawnSync('zstd', ['-dc', file], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 })
 if (z.status !== 0) throw new Error('zstd 解压失败')
 const header = JSON.parse(z.stdout.split('\n', 1)[0])
-const format = header.version   // 0 = v2 旧格式;3 = V3
+const format = header.version   // 0/2 = v2 旧格式;3 = V3;4 = V4
 // 事件行结构两者都是 type/seq/data;差异点按 header.version 分支处理
 ```
-规则:不要重命名/删除迁移产物;不要用 v3 内容回写 v2;报告/统计工具同时覆盖两种文件名。
+规则:不要重命名/删除迁移产物;不要用新代内容回写旧原文件;报告/统计工具同时覆盖三代文件名
+(`session.v4.jsonl.zstd` / `session.v3.jsonl.zstd` / `session.jsonl.zstd`),并按 header `version` 分流。
 
 **验证**:
 ```bash
-node <skill>/scripts/verify-session.mjs <会话目录> --json   # 含 S12:文件名与 header version 一致
-node <skill>/scripts/verify-session.mjs --all                    # 全量闸门 ALL PASS
+node <skill>/scripts/verify-session.mjs <会话目录> --json   # 含 S12:文件名与 header version 一致(V3/V4)
+node <skill>/scripts/verify-session.mjs --all                    # 全量闸门 ALL PASS(owner 需 V4-aware,否则会假绿)
 ```
 
 ## 模式 8:ctx.agent 移除(0.1.5)★
@@ -318,7 +331,7 @@ node <skill>/scripts/verify-patch.mjs --profile web   # 插件挂载后装配仍
 
 **定位**:
 ```bash
-grep -rn 'persona' ~/.dsh/settings.yaml ~/.dsh/profiles/web/cordis.patch.yml ~/.dsh/.agent-presets 2>/dev/null | grep -v node_modules
+grep -rn 'persona' ~/.dsh/profiles/web/cordis.patch.yml ~/.dsh/.agent-presets ~/.dsh/settings.yaml.imported 2>/dev/null | grep -v node_modules
 node <skill>/scripts/scan-upgrade.mjs   # 0.1.5 检查集命中 persona 旧写法
 ```
 
@@ -475,6 +488,86 @@ node <skill>/scripts/verify-session.mjs <会话目录>    # 单会话复核
 
 **边界**:repair 只改 v0 原文件里的 **3 个已知字段**——删掉非 notice 的 `source.summary`、把 `subagent/descriptor.version` 从 2 改成 3、把平铺 `replayState` 归一化为 `{ response, blocks }`(平铺成员移入 `response`),**不改事件语义**;已有 v3 后继的会话一律跳过;修完仍由 0.1.5 正常完成 v3 迁移(或首次打开时惰性完成)。
 
+## 模式 16:preset 改由装配树声明(0.1.7,旧目录不再被读取)★
+
+**症状**:打开/恢复旧会话报
+`RemoteError('agent-preset/not-found', 'Unknown agent preset: <id>')`(或设置页里旧预设消失)。
+与 0.1.2 时代"preset 目录被删"症状相同,但根因不同。
+
+**根因**:0.1.7-alpha.1 起官方 **不再读取 `~/.dsh/.agent-presets/<id>/`**(原文 "Nothing reads that directory any more.")。
+预设必须在**装配树**里声明为 Loader 行,或做成 plugin bundle 安装。
+所以按模式 6 建同名桩**没有任何作用**。
+
+**定位**(体检优先):
+```bash
+node <skill>/scripts/scan-upgrade.mjs
+# preset 分类 blocker: "会话引用的 agent preset 未在装配树声明: <id>(顶层 N / 子代理 M)"
+# legacy-presets 分类:旧目录残留 + 每个 id 的会话引用数
+
+# 已声明 preset 集合(config.id):
+dsh --profile web --dump-config | grep -A3 '^- id: preset-' | grep -E '^- id:|^    id:'
+# 会话 header 里的 preset 引用分布(V4 优先):
+for f in session.v4.jsonl.zstd session.v3.jsonl.zstd session.jsonl.zstd; do
+  [ -f "<会话目录>/$f" ] && zstd -dc "<会话目录>/$f" | head -1 && break
+done
+```
+
+**修复**(改 `profiles/<p>/cordis.patch.yml`,重启 dsh web 后生效):
+```yaml
+- insert:
+    - id: preset-<id>
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: <id>                 # 必须与会话 header.agentPreset 完全一致
+        order: 92
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are a coding agent powered by the {{model}} model.
+              suffix: Your working directory is {{cwd}}.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config: { maxBytes: 65536 }
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+```
+迁移旧 `agent.cordis.yml` 时的必改点:`persona.config.text` 已废弃(改 prefix/suffix);
+`dsh-workflow-worker-thread` → `dsh-workflow-ptc`;`dsh-tool-ralph` 默认关闭需显式启用;
+相对路径引用的本地 `.mjs` 资产在新模型下不可用,需要能内联就内联,否则退化为内置工具近似(并记录行为差异)。
+
+**验证**:
+```bash
+cd ~/.dsh/profiles/web && dsh --profile web --dump-config --patch /path/to/preset.yml | grep '^- id: preset-'   # 退出码 0 且出现目标行
+node <skill>/scripts/test-plugin-boot.mjs          # 隔离启动测试(临时 DSH_HOME),确认无 activation 报错
+node <skill>/scripts/scan-upgrade.mjs              # preset 分类归零
+```
+**清理**:确认 scan 的 `legacy-presets` 只剩 info(无会话引用未声明 preset)后,才可删除 `~/.dsh/.agent-presets/`。
+
+## 模式 17:settings.yaml 只导入一次 → 配置改到 Profile patch(0.1.7)★
+
+**症状**:手工改 `~/.dsh/settings.yaml` 后设置不生效;或者自研校验脚本读该文件得到空配置,
+把合法 provider/model 全判成失效(本机旧 scan 的 26 条模型报错里 21 条是这种误报)。
+
+**根因**:0.1.7-alpha.1 起设置改由**当前 Profile 的插件配置**保存;`~/.dsh/settings.yaml` **只尝试导入一次**,
+导入后改名为 `settings.yaml.imported`(本机 2026-09-19 已导入)。
+
+**定位**:
+```bash
+ls -la ~/.dsh/settings.yaml*                       # 只有 .imported / .bak-* 说明已导入
+dsh --profile web --dump-config | sed -n '/id: llm-pi-ai/,/^[^-]/p' | head -40   # 看真实生效的模型声明
+```
+
+**修复**:
+- 要改配置 → 改 `profiles/<p>/cordis.patch.yml`(或走设置页),重启 dsh web 生效;不要改 `.imported`。
+- 自研脚本读模型目录 → 优先 `profiles/<p>/cordis.patch.yml`,再 `dsh --dump-config`,最后才回退
+  `settings.yaml` / `settings.yaml.imported`(见本技能 `scan-upgrade.mjs` / `fix-model-refs.mjs` 的实现)。
+
+**验证**:改完 dump-config 能看到目标 provider/model;`scan-upgrade.mjs` 的 model 分类不再出现成片误报
+(本机实测从 26 条降到"只有真实失效")。
+
 ## 双闸门解读(常见结果)
 
 | 输出 | 含义 | 动作 |
@@ -484,9 +577,12 @@ node <skill>/scripts/verify-session.mjs <会话目录>    # 单会话复核
 | S8 WARN model/selection 等 | 工具快照旧或第三方扩展 | 换 shim / --ignore-type |
 | S9 FAIL 单帧 | 真损坏:session.list 会 500 | 用旧版本导出恢复(参考官方说明) |
 | S6 WARN 空洞 | 压缩投影正常痕迹 | 忽略 |
-| S12 FAIL | session.v3 文件名与 header version 不一致(迁移/拷贝残缺) | 从备份恢复该会话目录,勿手改文件 |
+| S12 FAIL | session.v3/v4 文件名与 header version 不一致(迁移/拷贝残缺) | 从备份恢复该会话目录,勿手改文件;owner 版 verify-session 需 V4-aware |
 | verify-patch T1 FAIL | 配置树装配问题 | 看 dump-config stderr 定位 |
 | T2 FAIL | mcp 配置 `!!js`/schema 问题 | 带/不带 token 双环境排查 |
 | T3 WARN 连不上 | 远程 MCP 需鉴权或网络 | INFO 级,不阻断 |
 | S1 死干预 ID | patch 行对应 bundle 已移除 | 删行 |
 | migration blocker / warning | v0 会话被迁移器拒绝(打开即 resume failed);尾部行只是被静默丢弃 | blocker 按模式 15 用 repair-v0-sessions.mjs 修复;warning 可忽略或一并修 |
+| preset blocker | 会话引用的 agent preset 未在装配树声明(0.1.7 起旧目录不再被读取) | 按模式 16 声明 preset-* 行;旧目录清理等 `legacy-presets` 变 info 后再做 |
+| model blocker | 会话当前 provider/model 不在装配树声明集(含已移除的内置模型) | 按模式 2 用 fix-model-refs.mjs 切换;注意内置集随版本缩减 |
+| model 成片误报 | 校验器读了已改名的 settings.yaml | 按模式 17 改读 Profile patch / dump-config |

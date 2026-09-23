@@ -3,7 +3,10 @@
 来源:官方 0.1.5-rc.1 Release Notes(自 v0.1.2-rc.1 以来的累计汇总,1486 commits / 改动 300 文件)
       + 本机 0.1.5-rc.1 实测(2026-09-10)。
 版本区间:0.1.2-rc.1 → 0.1.3-alpha.1 → 0.1.3-alpha.2 → 0.1.5-alpha.1 → 0.1.5-alpha.2 → 0.1.5-rc.1
-(GitHub 上无 0.1.4、无 0.1.5-rc.2)。旧代变更见同目录 breaking-changes-0.1.2.md。
+(GitHub 上无 0.1.4;0.1.5-rc.2 是 2026-09-10 的体验优化版,0.1.5-rc.3 仅 tag、无 release note)。
+本篇只覆盖到 0.1.5-rc.1;**0.1.5-rc.1 → 0.1.7-rc.1 的破坏面见同目录 breaking-changes-0.1.7.md**
+(V4 会话格式、声明式 preset、settings 单次导入、PTC/workflow 改名、内置模型缩减等)。
+旧代变更见同目录 breaking-changes-0.1.2.md。
 每条列:变更 → 影响面 → 判定方法 → 修复,并标注本技能哪个工具能定位/修/验证。
 ★★=阻断级(不修会崩或会话打不开);★=重要;○=留意即可。
 
@@ -39,7 +42,7 @@
 |---|---|---|---|---|
 | ★★4 | **移除 `ctx.agent`**:插件 Agent API 调整,调用方需**显式传递 Agent**;同时修正可继续对话子代理的归属(不再被当根会话参与定时调度) | 所有用 `ctx.agent` 取当前 agent 的 preset/插件 | scan-upgrade 0.1.5 检查集命中 ctx.agent;grep `ctx\.agent`(排除 node_modules) | 由调用点把 Agent 作为参数显式传入,见 fix-patterns.md 模式 8;node --check + 插件启用日志 |
 | ★★5 | **Inbox API 调整**:`Inbox` 改为**类型接口**,不再导出可构造的运行时类;`hasPending` 与 `claim` 不再属于公共接口;插件通过 `agent.inbox` 读写待处理消息 | 构造 Inbox 实例或调 hasPending/claim 的插件 | scan-upgrade 0.1.5 检查集命中 Inbox 用法;grep `new Inbox`、`hasPending`、`claim` | 改用 `agent.inbox`;等待/认领语义对照当前包内 Inbox 类型定义重写,见 fix-patterns.md 模式 9 |
-| ★6 | **自定义 persona 配置拆分为 prefix / suffix**,旧配置及相关常量需适配 | 配置了自定义 persona 的 profile/patch | grep settings.yaml / cordis.patch.yml 里的 persona 配置;scan-upgrade 0.1.5 检查集 | 按 prefix/suffix 两字段拆分旧值,见 fix-patterns.md 模式 11;dump-config + verify-patch |
+| ★6 | **自定义 persona 配置拆分为 prefix / suffix**,旧配置及相关常量需适配 | 配置了自定义 persona 的 profile/patch | grep profiles/\<p\>/cordis.patch.yml 里的 persona 配置(0.1.7 起配置在 Profile patch;旧机器看 settings.yaml);scan-upgrade 0.1.5 检查集 | 按 prefix/suffix 两字段拆分旧值,见 fix-patterns.md 模式 11;dump-config + verify-patch |
 | ★★7 | **Web 插件面板 API 调整**:插件可通过 `sidebar.panellist` 与 `main` 注册全局面板;原 `conversation` Slot 迁移为 `main` 的 `conversation` key;**Detail 面板已移除**,能力迁至右侧 Sidebar(多标签/分栏/全屏,Markdown、代码、HTML、PDF、图片预览,含子代理与未激活会话的文件) | 注册 conversation Slot 或依赖 Detail 面板的 client 插件/自定义 UI | scan-upgrade 0.1.5 检查集命中 conversation Slot / Detail;grep 插件 client 源码的 slot 注册与 Detail | 全局面板改注册到 `sidebar.panellist` 与 `main`;会话面板用 `main.conversation`;Detail 交互迁 Sidebar,见 fix-patterns.md 模式 10 |
 | ★★18 | **服务访问严格 inject(2026-09-10 本机实测)**:`ctx.connection.rpc.handle(...)` 等注册类 API 改为在**调用方 fiber** 上注册并取服务;插件少了对应 inject(如 `webServer`)会在 apply 时报 `cannot get property "webServer" without inject`,**整棵插件树加载失败**(不是单个插件失效) | 调用 connection RPC 注册的第三方插件(实例:`@js2hou/dsh-mcp-manager` 0.1.5,上游 issue #6) | 启动日志 `plugin tree failed to load: failed to apply loader entry <id> ... without inject`;scan-upgrade 检查项 2 已固化该模式;启用前跑 `test-plugin-boot.mjs` 一轮复现 | 保持 disabled 等上游适配(本机实测仅补 inject 仍失败);**启用任何第三方插件前先跑隔离 boot 测试**,见 fix-patterns.md 模式 4 |
 
@@ -47,7 +50,7 @@
 
 | # | 变更 | 影响面 | 判定 | 修复 |
 |---|---|---|---|---|
-| ★★8 | **新会话默认模型变为 `deepseek-flash`**(DeepSeek-V41-Flash,支持文本/图片/会话历史中的系统提示词更新);配置文件显式指定模型时以配置值为准 | 旧校验脚本的内置集没有这个 id → 新会话被误报 UNKNOWN_MODEL;批量切模型时目标选错 | scan-upgrade 的 model 分类;fix-model-refs.mjs --list | 合法性用**并集**判定:内置 deepseek-official 集 ∪ settings.yaml `llm-deepseek.models` ∪ `llm-pi-ai.providers.<name>.models[*].id`;内置集 4 个 id 为 deepseek-flash / deepseek-v4-flash / deepseek-v4-pro / deepseek-v4-flash-vision-exp;见 model-fix.md |
+| ★★8 | **新会话默认模型变为 `deepseek-flash`**(DeepSeek-V41-Flash,支持文本/图片/会话历史中的系统提示词更新);配置文件显式指定模型时以配置值为准 | 旧校验脚本的内置集没有这个 id → 新会话被误报 UNKNOWN_MODEL;批量切模型时目标选错 | scan-upgrade 的 model 分类;fix-model-refs.mjs --list | 合法性用**并集**判定:内置 deepseek-official 集 ∪ `llm-deepseek.models` ∪ `llm-pi-ai.providers.<name>.models[*].id`;**0.1.5 时代**内置 4 个 id 为 deepseek-flash / deepseek-v4-flash / deepseek-v4-pro / deepseek-v4-flash-vision-exp;**0.1.6-alpha.2 起缩减为 deepseek-flash + deepseek-v4-pro**(见 breaking-changes-0.1.7.md);0.1.7 起声明来源改成 Profile `cordis.patch.yml`(+ dump-config),不再是 settings.yaml;见 model-fix.md |
 | ★9 | **selectModel 成功后同时写全局默认模型**(0.1.5 起,内部 `agentDefaultModel.saveSelection`) | 批量修复旧会话会把全局默认模型一起改掉 | fix-model-refs.mjs 执行时会打印该提醒 | 执行前想清楚全局默认要停在哪;若只想修会话不想动全局,执行后到设置面板/配置里把默认模型改回期望值 |
 | ○10 | pi-ai 升至 0.85.1;模型探测支持自定义 provider 的 models 对象与 Anthropic 原生列表,回填名称/上下文窗口/最大输出 token;失效目录只影响单项并提供诊断入口 | 旧 provider 目录漂移仍会导致 UNKNOWN_MODEL | 同 #8 | 修会话引用,不要为旧名恢复声明(会复现漂移);详见 model-fix.md |
 
@@ -100,6 +103,7 @@ pnpm build:web       # 若使用浏览器 GUI
 - [ ] 自定义 persona 已按 prefix/suffix 拆分——#6
 - [ ] 不再从普通 subprocess handle 读取 `pid`——#11
 - [ ] 确认新会话默认模型 `deepseek-flash` 是否符合预期(或已在配置中固定模型),旧会话引用已用并集判定并修复——#8/#9
+- [ ] (0.1.5-rc.2 及以后)会话引用未落在**已缩减的**内置模型集(0.1.6-alpha.2 起只剩 deepseek-flash / deepseek-v4-pro)——breaking-changes-0.1.7.md #8.1
 - [ ] verify-session --all 与 verify-patch --profile web 双闸门 ALL PASS(含 S12)——见 SKILL.md 验证章节
 
 ## 8. 官方来源
@@ -108,4 +112,5 @@ pnpm build:web       # 若使用浏览器 GUI
 - 全量对比(1486 commits):https://github.com/deepseek-ai/deepseek-harness/compare/dsh-v0.1.2-rc.1...dsh-v0.1.5-rc.1
 - Session 格式迁移说明:仓库内 `packages/session/session-format-v2-to-v3/README.zh.md`
 - v0→v1 迁移器(冻结校验)实现:包 `@deepseek-ai/dsh-session-format-v0-to-v1`;本机修复工具 `scripts/repair-v0-sessions.mjs`
+- 下一段版本区间(0.1.5-rc.1 → 0.1.7-rc.1):同目录 `breaking-changes-0.1.7.md`
 - 相关技能:dsh-session-logs(闸门 owner)、dsh-config-assembly(闸门 owner)、dsh-run、dsh-foundations

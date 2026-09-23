@@ -4,16 +4,20 @@
  *
  * 默认快速档：
  *   A node --check 全部脚本          B scan 与 verify-session 事件类型并集一致
- *   C 内置模型 id 一致               D 闸门解析（sync-gates --list）
+ *   C 内置模型 id 一致（含 0.1.6-alpha.2 缩减前后的全集）  D 闸门解析（sync-gates --list）
  *   E v2/v3 fixtures 经薄壳验证 ALL PASS   F 目录发现优先 V3 文件
  *   H S1 活跃 turn 判定（in-flight WARN / 已闭合 turn FAIL）
  *   I scan v0 迁移检查（提交区→blocker / 未提交尾部→warning）
  *   J scan 严格 inject 检查（rpc.handle 缺 webServer→blocker / 已声明或裸调用→不误报）
- * --full 追加：scan-upgrade --json 必须无 blocker 且未被版本门控跳过。
+ *   K scan V4 支持与声明式 preset 核对（V4 优先 V3、preset 未声明→blocker、模型目录读 Profile patch）
+ *   L scan 模型声明来源回退（无 patch 时读 dump-config；模型失效→blocker 且 preset 不误报）
+ * --full 追加 G + M（共用一次扫描）：G 断言 scan 真跑完（JSON/退出码契约一致、未被版本门控跳过、
+ *   preset 检查已执行、无未知类别）；M 断言"本机 scan = 0 blocker"（真实断链修完后成立）。
+ *   两者分开，便于区分"工具坏了"与"机器还有未修复的真问题"。
  *
  * 用法：node scripts/selftest.mjs [--full]   退出码 0=PASS 1=FAIL
  */
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -251,17 +255,159 @@ else {
   }
 }
 
-// --full: 真实体检
+// 合成 DSH_HOME + 假 dsh 的脚手架(K/L 共用): 让 preset/模型声明来源可控且确定
+function mkScanFixture(dumpText) {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-scan-'))
+  const bin = join(dir, 'bin')
+  const home = join(dir, 'home')
+  mkdirSync(bin, { recursive: true })
+  const fake = join(bin, 'dsh')
+  writeFileSync(fake, '#!' + process.execPath + '\n' + [
+    'const args = process.argv.slice(2)',
+    "if (args.includes('--version')) { console.log('0.1.7-rc.1'); process.exit(0) }",
+    'if (args.includes("--dump-config")) { process.stdout.write(' + JSON.stringify(dumpText) + '); process.exit(0) }',
+    'process.exit(0)',
+    '',
+  ].join('\n'))
+  chmodSync(fake, 0o755)
+  const writeSession = (rel, fileName, lines) => {
+    const d = join(home, 'sessions', '--ws--', rel)
+    mkdirSync(d, { recursive: true })
+    writeFileSync(join(d, fileName), zstdCompressSync(Buffer.from(lines.join('\n') + '\n')))
+  }
+  const scan = () => {
+    const r = spawnSync(process.execPath, [join(here, 'scan-upgrade.mjs'), '--dsh-home', home, '--profile', 'web', '--json'], {
+      encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120000,
+      env: { ...process.env, PATH: bin + ':' + (process.env.PATH || '') },
+    })
+    let j = null
+    try { j = JSON.parse(r.stdout || '{}') } catch { /* 输出异常时留空 */ }
+    return { status: r.status, json: j, issues: (j && j.issues) || [] }
+  }
+  return { dir, home, scan, writeSession }
+}
+const dumpHeader = (id, preset, version) => JSON.stringify({ type: 'session', version, id, createdAt: 1, cwd: '/tmp', isSeeded: version >= 3, delegationDepth: 0, agentPreset: preset })
+
+// K. scan 的 V4 支持与声明式 preset 核对（0.1.7）
+{
+  const dump = [
+    "- id: preset-standard",
+    "  name: '@deepseek-ai/dsh-agent-preset'",
+    '  config:',
+    '    id: standard',
+    '    order: 1',
+    "- id: llm-pi-ai",
+    "  name: '@deepseek-ai/dsh-llm-pi-ai'",
+    '  config:',
+    '    providers:',
+    '      opencode-go-oai:',
+    '        models:',
+    '          - id: deepseek-v4.1-flash',
+    '',
+  ].join('\n')
+  const fx = mkScanFixture(dump)
+  try {
+    mkdirSync(join(fx.home, 'profiles', 'web'), { recursive: true })
+    writeFileSync(join(fx.home, 'profiles', 'web', 'cordis.patch.yml'), [
+      "- id: llm-pi-ai",
+      "  name: '@deepseek-ai/dsh-llm-pi-ai'",
+      '  config:',
+      '    providers:',
+      '      opencode-go-oai:',
+      '        models:',
+      '          - id: deepseek-v4.1-flash',
+      '',
+    ].join('\n'))
+    // 同一会话目录同时有 v4(权威, ghost) 与 v3(decoy-v3): 必须按 V4 判定
+    fx.writeSession('s-v4', 'session.v4.jsonl.zstd', [
+      dumpHeader('s-v4', 'ghost', 4),
+      JSON.stringify({ type: 'model/selection', seq: 0, time: 1, data: { provider: 'opencode-go-oai', model: 'deepseek-v4.1-flash' } }),
+    ])
+    fx.writeSession('s-v4', 'session.v3.jsonl.zstd', [dumpHeader('s-v4', 'decoy-v3', 3)])
+    fx.writeSession('s-std', 'session.v4.jsonl.zstd', [dumpHeader('s-std', 'standard', 4)])
+    mkdirSync(join(fx.home, '.agent-presets', 'ghost'), { recursive: true })
+    writeFileSync(join(fx.home, '.agent-presets', 'ghost', 'preset.yml'), 'name: ghost\n')
+    const r = fx.scan()
+    const presetIssue = r.issues.find(i => i.category === 'preset')
+    const modelIssue = r.issues.find(i => i.category === 'model')
+    const fmtIssue = r.issues.find(i => i.category === 'v3')
+    const legacyIssue = r.issues.find(i => i.category === 'legacy-presets')
+    const okPreset = r.status === 1 && presetIssue && presetIssue.severity === 'blocker' && /ghost\(顶层 1\)/.test(presetIssue.detail) && !/decoy-v3|standard/.test(presetIssue.detail)
+    const okModel = modelIssue && modelIssue.severity === 'ok' && /cordis\.patch\.yml/.test(modelIssue.detail)
+    const okFmt = fmtIssue && /V4 会话 2 个/.test(fmtIssue.detail) && /保留 v2\/v3 旧文件/.test(fmtIssue.detail)
+    const okLegacy = legacyIssue && legacyIssue.severity === 'warning' && /ghost/.test(legacyIssue.detail)
+    if (okPreset && okModel && okFmt && okLegacy) pass('K', 'V4 优先 V3 + preset 未声明→blocker + 模型目录读 Profile patch + 旧目录残留')
+    else fail('K', 'V4/preset 用例失败: ' + JSON.stringify({ status: r.status, preset: presetIssue, model: modelIssue, fmt: fmtIssue, legacy: legacyIssue }).slice(0, 500))
+  } catch (e) {
+    fail('K', 'V4/preset 用例异常: ' + String(e && e.message ? e.message : e))
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true })
+  }
+}
+
+// L. scan 的模型目录回退：无 patch 时读 dump-config；模型失效→blocker，preset 不误报
+{
+  const dump = [
+    "- id: preset-standard",
+    "  name: '@deepseek-ai/dsh-agent-preset'",
+    '  config:',
+    '    id: standard',
+    "- id: llm-pi-ai",
+    "  name: '@deepseek-ai/dsh-llm-pi-ai'",
+    '  config:',
+    '    providers:',
+    '      opencode-go-oai:',
+    '        models:',
+    '          - id: deepseek-v4.1-flash',
+    '',
+  ].join('\n')
+  const fx = mkScanFixture(dump)
+  try {
+    fx.writeSession('s-bad', 'session.v3.jsonl.zstd', [
+      dumpHeader('s-bad', 'standard', 3),
+      JSON.stringify({ type: 'request/header', seq: 0, time: 1, data: { header: { config: { provider: 'opencode-go-oai', model: 'hy3' } } } }),
+    ])
+    const r = fx.scan()
+    const presetIssue = r.issues.find(i => i.category === 'preset')
+    const modelIssue = r.issues.find(i => i.category === 'model')
+    const okModel = modelIssue && modelIssue.severity === 'blocker' && /opencode-go-oai\/hy3/.test(modelIssue.detail) && /dump-config/.test(modelIssue.detail)
+    const okPreset = presetIssue && presetIssue.severity === 'ok'
+    if (r.status === 1 && okModel && okPreset) pass('L', 'dump-config 回退为模型目录 + 模型 blocker 与 preset 不混淆')
+    else fail('L', '模型目录回退用例失败: ' + JSON.stringify({ status: r.status, model: modelIssue, preset: presetIssue }).slice(0, 500))
+  } catch (e) {
+    fail('L', '模型目录回退用例异常: ' + String(e && e.message ? e.message : e))
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true })
+  }
+}
+
+// --full: 真实体检(scan 只跑一次, G 与 M 共用结果)
+//   G = 工具正确性: JSON/退出码契约一致、未被版本门控跳过、preset 检查已执行、无未知类别
+//   M = 机器干净度: 本机 scan 应为 0 blocker(真实断链已修完)
 if (full) {
   const r = spawnSync(process.execPath, [join(here, 'scan-upgrade.mjs'), '--json'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 600000 })
   try {
     const j = JSON.parse(r.stdout || '{}')
-    const blockers = j.blocker ?? (j.issues || []).filter(i => i.severity === 'blocker').length
+    const blocker = j.blocker ?? (j.issues || []).filter(i => i.severity === 'blocker').length
+    const warning = j.warning ?? (j.issues || []).filter(i => i.severity === 'warning').length
     const skipped = (j.issues || []).some(i => i.category === 'version' && /未达/.test(i.detail || ''))
-    if (r.status === 0 && blockers === 0 && !skipped && j.version) pass('G', 'scan --full: ' + j.version + ' 无 blocker 且未跳过')
-    else fail('G', 'scan --full 异常: exit=' + r.status + ' blocker=' + blockers + ' skipped=' + skipped + ' version=' + j.version)
+    const cats = new Set((j.issues || []).map(i => i.category))
+    const known = ['version', 'source', 'config', 'model', 'events', 'v3', 'migration', 'preset', 'legacy-presets']
+    const uncovered = [...cats].filter(c => !known.includes(c))
+    const contract = blocker > 0 ? r.status === 1 : r.status === 0
+    const presetChecked = cats.has('preset') || cats.has('legacy-presets')
+    if (contract && !skipped && j.version && presetChecked && !uncovered.length) {
+      pass('G', 'scan --full: ' + j.version + ' 跑完(JSON/退出码契约一致, preset 检查已执行) — blocker=' + blocker + ' warning=' + warning)
+    } else {
+      fail('G', 'scan --full 异常: exit=' + r.status + ' blocker=' + blocker + ' skipped=' + skipped + ' presetChecked=' + presetChecked + ' uncovered=' + JSON.stringify(uncovered) + ' version=' + j.version)
+    }
+    // M: 真实机器应为 0 blocker;有 blocker 就按分类打印, 便于区分 preset / model / migration
+    const blockers = (j.issues || []).filter(i => i.severity === 'blocker')
+    if (r.status === 0 && blocker === 0) pass('M', '本机 scan = 0 blocker(真实断链已修完) — warning=' + warning)
+    else fail('M', '本机 scan 仍有 blocker=' + blocker + ': ' + blockers.map(i => i.category + '::' + String(i.detail).slice(0, 140)).join(' | '))
   } catch (e) {
     fail('G', 'scan --json 解析失败: ' + String(e.message) + ' ' + String(r.stderr || '').slice(0, 200))
+    fail('M', 'scan --json 解析失败, 无法断言 0 blocker')
   }
 }
 

@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.15'
-      - name: Deterministic selftest (A-J)
+      - name: Deterministic selftest (A-M)
         run: node skills/dsh-update-guide/scripts/selftest.mjs
       - name: Embedded gate copies vs owner (drift check)
         run: node skills/dsh-update-guide/scripts/sync-gates.mjs --check

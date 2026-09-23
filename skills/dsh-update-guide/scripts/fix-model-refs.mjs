@@ -1,28 +1,32 @@
 #!/usr/bin/env node
 /**
  * fix-model-refs — 批量修复 UNKNOWN_MODEL:把引用失效模型(provider/model 不在当前
- * settings.yaml 声明集)的顶层会话,切到指定模型。免手写 curl 循环。
+ * 装配树声明集)的顶层会话,切到指定模型。免手写 curl 循环。
  *
- * 兼容 dsh 0.1.5 会话存储:每个会话目录优先 session.v3.jsonl.zstd(V3),否则回退
- * session.jsonl.zstd(旧格式);V3 与旧格式的 model/selection、request/header 解析一致。
- * 子代理会话(header origin/kind=subagent、delegationDepth>0、parentSession 任一)跳过。
+ * 会话存储:每个会话目录的权威日志按 V4 > V3 > V2 选择 —— session.v4.jsonl.zstd(0.1.7 V4)、
+ * session.v3.jsonl.zstd(0.1.5 V3)、session.jsonl.zstd(旧格式);三代日志的 model/selection、
+ * request/header 解析一致(request/header 取 data.header.config)。子代理会话(header
+ * origin/kind=subagent、delegationDepth>0、parentSession 任一)跳过。
  *
  * 用法:
- *   node fix-model-refs.mjs [--dsh-home ~/.dsh] --list
+ *   node fix-model-refs.mjs [--dsh-home ~/.dsh] [--profile web] --list
  *       只列出引用失效模型的会话(默认动作,不改动任何东西)
- *   node fix-model-refs.mjs [--dsh-home ~/.dsh] \
+ *   node fix-model-refs.mjs [--dsh-home ~/.dsh] [--profile web] \
  *        --provider deepseek-official --model deepseek-flash \
  *        [--reasoningEffort high] [--all] [--dry-run] [--token-file <cookie>]
- *        --provider/--model 指定目标(0.1.5 推荐 deepseek-official/deepseek-flash);
+ *        --provider/--model 指定目标(0.1.5+ 推荐 deepseek-official/deepseek-flash);
  *        默认只切"引用无效"的会话,--all 强制所有顶层会话都切到目标(统一切换)。
  *        --dry-run 只打印将发送的会话列表与请求,不发请求。
  *        --token-file 指定登录 cookie jar(先 curl -c 拿好);缺省则自动
  *        尝试 GET /?token=DSH_TOKEN (env) 建档。
  *
  * 模型声明集(与 scan-upgrade.mjs 语义一致):
- *   deepseek-official = 0.1.5 内置 4 个 id(deepseek-flash、deepseek-v4-flash、
- *   deepseek-v4-pro、deepseek-v4-flash-vision-exp) ∪ settings.yaml 顶层
- *   llm-deepseek.models[*].id;其他 provider 取 llm-pi-ai.providers.<name>.models[*].id。
+ *   deepseek-official = 内置 id ∪ 装配树 llm-deepseek.models[*].id;
+ *   其他 provider 取装配树 llm-pi-ai.providers.<name>.models[*].id。
+ *   声明来源优先级:profiles/<profile>/cordis.patch.yml → dsh --dump-config(补 bundle 声明)
+ *   → settings.yaml → settings.yaml.imported(0.1.7 起 settings.yaml 只导入一次并改名)。
+ *   内置 id 随版本变化:0.1.5 为 4 个(deepseek-flash、deepseek-v4-flash、deepseek-v4-pro、
+ *   deepseek-v4-flash-vision-exp);0.1.6-alpha.2 起缩减为 deepseek-flash、deepseek-v4-pro。
  *
  * 注意: 自 dsh 0.1.5 起,session/selectModel 成功后会把选择同时写入全局默认模型
  * (agentDefaultModel.saveSelection);非 --dry-run 的批量修复会改默认模型。
@@ -48,6 +52,7 @@ const opt = (name, def) => {
 }
 const has = name => ARGV.includes(name)
 const LIST = has('--list')
+const PROFILE = opt('--profile', 'web')
 const PROVIDER = opt('--provider', null)
 const MODEL = opt('--model', null)
 const EFFORT = opt('--reasoningEffort', 'high')
@@ -57,49 +62,119 @@ const COOKIE_FILE = opt('--token-file', null)
 
 const BASE = 'http://127.0.0.1:3080'
 
-// ---------- settings.yaml 模型目录解析(与 scan-upgrade.mjs 的缩进栈实现同一语义) ----------
+// ---------- 模型声明目录解析(与 scan-upgrade.mjs 同一语义) ----------
 // 只认两条路径: llm-pi-ai.providers.<name>.models[*].id 与顶层 llm-deepseek.models[*].id。
-// 旧实现按固定缩进匹配, 会把 include/tools 等层级的 - id 误收成 provider/model,
-// 导致目标预检通过但 dsh 实际不认; 现与 scan 共用"缩进栈 + 路径校验"。
-function parseSettingsModelCatalog(settingsText) {
+// 同时兼容 settings.yaml 的顶层键形状与 dump-config / cordis.patch.yml 的
+// "- id: llm-pi-ai" 装配条目形状(条目形状会多一层 config)。
+function parseModelCatalog(text) {
   const providers = new Map() // name -> Set(modelId)
   const deepseek = new Set()
   const stack = [] // {indent, key}
-  const unquote = s => s.replace(/^["']|["']$/g, '')
-  for (const rawLine of settingsText.split('\n')) {
+  const unquote = s => String(s).replace(/^["']|["']$/g, '').trim()
+  for (const rawLine of String(text || '').split('\n')) {
     const line = rawLine.replace(/\s+#.*$/, '')
     if (!line.trim() || /^\s*#/.test(line)) continue
     const indent = line.match(/^\s*/)[0].length
     const body = line.trim()
     const li = body.match(/^-\s*id:\s*(.+?)\s*$/)
     if (li) {
-      const path = stack.filter(s => s.indent < indent).map(s => s.key)
+      const rawPath = stack.filter(s => s.indent < indent).map(s => s.key)
+      const path = rawPath.length > 1 && rawPath[1] === 'config' ? [rawPath[0], ...rawPath.slice(2)] : rawPath
+      const id = unquote(li[1])
       if (path.length === 4 && path[0] === 'llm-pi-ai' && path[1] === 'providers' && path[3] === 'models') {
         if (!providers.has(path[2])) providers.set(path[2], new Set())
-        providers.get(path[2]).add(unquote(li[1]))
+        providers.get(path[2]).add(id)
       } else if (path.length === 2 && path[0] === 'llm-deepseek' && path[1] === 'models') {
-        deepseek.add(unquote(li[1]))
+        deepseek.add(id)
       }
+      while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop()
+      stack.push({ indent, key: id })
       continue
     }
     const kv = body.match(/^([^:]+):\s*(.*)$/)
     if (!kv) continue
-    const key = unquote(kv[1].trim())
+    const key = unquote(kv[1])
     while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop()
     stack.push({ indent, key })
   }
   return { providers, deepseek }
 }
 
-// 0.1.5 内置 deepseek-official 模型 id(与 dsh-llm-deepseek 的 DEFAULT_MODELS 一致)
-const OFFICIAL_MODELS = new Set(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'])
+// 声明来源优先级: Profile cordis.patch.yml → dsh dump-config → settings.yaml → settings.yaml.imported
+function loadModelCatalog() {
+  const tried = []
+  const merged = { providers: new Map(), deepseek: new Set() }
+  const used = []
+  const absorb = (cat, name) => {
+    let n = 0
+    for (const [p, set] of cat.providers) {
+      if (!merged.providers.has(p)) merged.providers.set(p, new Set())
+      for (const m of set) { merged.providers.get(p).add(m); n++ }
+    }
+    for (const m of cat.deepseek) { merged.deepseek.add(m); n++ }
+    if (n) used.push(name)
+  }
+  const patchRel = `profiles/${PROFILE}/cordis.patch.yml`
+  const patchFile = join(DSH_HOME, patchRel)
+  if (existsSync(patchFile)) {
+    try { absorb(parseModelCatalog(readFileSync(patchFile, 'utf8')), patchRel) } catch { tried.push(`${patchRel}:读取失败`) }
+  } else tried.push(`${patchRel}:缺失`)
+  const dump = spawnSync('dsh', ['--profile', PROFILE, '--dump-config'], {
+    encoding: 'utf8', env: { ...process.env, DSH_HOME }, maxBuffer: 64 * 1024 * 1024, timeout: 180_000,
+  })
+  if (!dump.error && (dump.stdout || '').trim()) absorb(parseModelCatalog(dump.stdout), `dsh --profile ${PROFILE} --dump-config`)
+  else tried.push(`dsh --profile ${PROFILE} --dump-config:不可用`)
+  if (!used.length) {
+    for (const f of ['settings.yaml', 'settings.yaml.imported']) {
+      const p = join(DSH_HOME, f)
+      if (!existsSync(p)) { tried.push(`${f}:缺失`); continue }
+      try { absorb(parseModelCatalog(readFileSync(p, 'utf8')), f) } catch { tried.push(`${f}:读取失败`) }
+      if (used.length) break
+    }
+  }
+  return { providers: merged.providers, deepseek: merged.deepseek, source: used.length ? used.join(' ∪ ') : null, tried }
+}
 
-// 每个会话目录优先 V3 日志(0.1.5),否则旧日志
+// ---------- 内置 deepseek-official 模型 id(随版本缩减) ----------
+const OFFICIAL_MODELS_015 = new Set(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'])
+const OFFICIAL_MODELS_016 = new Set(['deepseek-flash', 'deepseek-v4-pro'])
+function parseSemver(text) {
+  const m = String(text || '').match(/(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/)
+  if (!m) return null
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]), pre: m[4] ? m[4].split('.').filter(Boolean) : [] }
+}
+function cmpSemver(a, b) {
+  for (const k of ['major', 'minor', 'patch']) if (a[k] !== b[k]) return a[k] < b[k] ? -1 : 1
+  if (!a.pre.length && !b.pre.length) return 0
+  if (!a.pre.length) return 1
+  if (!b.pre.length) return -1
+  const n = Math.max(a.pre.length, b.pre.length)
+  for (let i = 0; i < n; i++) {
+    const x = a.pre[i], y = b.pre[i]
+    if (x === undefined) return -1
+    if (y === undefined) return 1
+    const xn = /^\d+$/.test(x), yn = /^\d+$/.test(y)
+    if (xn && yn) { if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1 }
+    else if (xn) return -1
+    else if (yn) return 1
+    else if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+// 0.1.6-alpha.2 起内置集缩减;版本无法解析时取并集(避免误报)
+function officialModelSet() {
+  const v = parseSemver(spawnSync('dsh', ['--version'], { encoding: 'utf8', env: { ...process.env, DSH_HOME }, timeout: 30_000 }).stdout || '')
+  if (!v) return new Set([...OFFICIAL_MODELS_015, ...OFFICIAL_MODELS_016])
+  return cmpSemver(v, { major: 0, minor: 1, patch: 6, pre: ['alpha', '2'] }) >= 0 ? new Set(OFFICIAL_MODELS_016) : new Set(OFFICIAL_MODELS_015)
+}
+
+// 每个会话目录的权威日志按 V4 > V3 > V2(0.1.7 V4 / 0.1.5 V3 / 旧格式)
 function sessionLogFile(dir) {
-  const v3 = join(dir, 'session.v3.jsonl.zstd')
-  if (existsSync(v3)) return v3
-  const v2 = join(dir, 'session.jsonl.zstd')
-  return existsSync(v2) ? v2 : null
+  for (const name of ['session.v4.jsonl.zstd', 'session.v3.jsonl.zstd', 'session.jsonl.zstd']) {
+    const p = join(dir, name)
+    if (existsSync(p)) return p
+  }
+  return null
 }
 
 // header(首行)表明这是子代理会话:origin/kind=subagent、delegationDepth>0、parentSession 存在
@@ -109,6 +184,19 @@ function isSubagentHeader(firstLine) {
   if (/"parentSession"\s*:/.test(firstLine)) return true
   const dm = firstLine.match(/"delegationDepth"\s*:\s*(\d+)/)
   return !!dm && Number(dm[1]) > 0
+}
+
+// 从 model/selection 或 request/header 行取 provider/model(V4 起 request/header 是 data.header.config.*)
+function refFromLine(line, kind) {
+  let e
+  try { e = JSON.parse(line) } catch { return null }
+  const d = e && e.data
+  if (!d || typeof d !== 'object') return null
+  if (kind === 'selection') {
+    return typeof d.provider === 'string' && typeof d.model === 'string' ? `${d.provider}/${d.model}` : null
+  }
+  const conf = (d.header && d.header.config) || d.config || d
+  return conf && typeof conf.provider === 'string' && typeof conf.model === 'string' ? `${conf.provider}/${conf.model}` : null
 }
 
 function collectTopLevelSessions() {
@@ -129,15 +217,12 @@ function collectTopLevelSessions() {
       if (isSubagentHeader(firstLine)) continue
       let sel = null, hdr = null
       for (const line of r.stdout.split('\n')) {
-        // V3 与旧格式的 model/selection、request/header 结构相同,同一套提取逻辑
         if (line.includes('"model/selection"')) {
-          const p = line.match(/"provider":\s*"([^"]+)"/)
-          const mo = line.match(/"model":\s*"([^"]+)"/)
-          if (p && mo) sel = `${p[1]}/${mo[1]}`
+          const ref = refFromLine(line, 'selection')
+          if (ref) sel = ref
         } else if (line.includes('"request/header"')) {
-          const p = line.match(/"provider":\s*"([^"]+)"/)
-          const mo = line.match(/"model":\s*"([^"]+)"/)
-          if (p && mo) hdr = `${p[1]}/${mo[1]}`
+          const ref = refFromLine(line, 'header')
+          if (ref) hdr = ref
         }
       }
       const ref = sel ?? hdr
@@ -203,21 +288,24 @@ function warnDefaultModelWrite() {
 }
 
 // ---------- 主流程 ----------
-const settingsFile = join(DSH_HOME, 'settings.yaml')
-const settingsText = existsSync(settingsFile) ? readFileSync(settingsFile, 'utf8') : ''
-const { providers, deepseek: deepseekModels } = parseSettingsModelCatalog(settingsText)
-// deepseek-official 合法集 = 0.1.5 内置 id ∪ settings.yaml 顶层 llm-deepseek.models
-const officialModels = new Set([...OFFICIAL_MODELS, ...deepseekModels])
+const catalog = loadModelCatalog()
+if (!catalog.source) {
+  console.error(`未找到可用的模型声明来源(${catalog.tried.join('; ')});请确认 dsh CLI 可用或 profiles/${PROFILE}/cordis.patch.yml 存在`)
+  process.exit(2)
+}
+// deepseek-official 合法集 = 当前版本内置 id ∪ 装配树 llm-deepseek.models
+const officialModels = new Set([...officialModelSet(), ...catalog.deepseek])
 
 const sessions = collectTopLevelSessions()
 for (const s of sessions) {
   if (s.provider === 'deepseek-official') s.invalid = !officialModels.has(s.model)
-  else s.invalid = !(providers.get(s.provider)?.has(s.model) ?? false)
+  else s.invalid = !(catalog.providers.get(s.provider)?.has(s.model) ?? false)
 }
 const invalid = sessions.filter(s => s.invalid)
 const validCount = sessions.length - invalid.length
 
-console.log(`扫描: 顶层 ${sessions.length} 会话(优先 V3 日志,子代理已跳过), 引用有效 ${validCount}, 无效 ${invalid.length}`)
+console.log(`扫描: 顶层 ${sessions.length} 会话(优先 V4 > V3 > V2 日志,子代理已跳过), 引用有效 ${validCount}, 无效 ${invalid.length}`)
+console.log(`声明来源: ${catalog.source}`)
 if (invalid.length) {
   for (const s of invalid) console.log(`  INVALID ${s.ref}  <- ${s.id}`)
 } else {
@@ -231,9 +319,9 @@ if (LIST || !PROVIDER || !MODEL) {
 }
 
 // 目标模型合法性预检(deepseek-official 含内置集与 llm-deepseek.models 扩展)
-const targetOk = PROVIDER === 'deepseek-official' ? officialModels.has(MODEL) : (providers.get(PROVIDER)?.has(MODEL) ?? false)
+const targetOk = PROVIDER === 'deepseek-official' ? officialModels.has(MODEL) : (catalog.providers.get(PROVIDER)?.has(MODEL) ?? false)
 if (!targetOk) {
-  console.error(`目标模型不在声明集: ${PROVIDER}/${MODEL}(settings.yaml/内置集无此 provider/model)`)
+  console.error(`目标模型不在声明集: ${PROVIDER}/${MODEL}(装配树/内置集无此 provider/model;声明来源 ${catalog.source})`)
   process.exit(2)
 }
 

@@ -5,17 +5,17 @@
  * session.list 整体 500。素材：官方 SessionLogScanner 语义 + 社区报告
  * （dsh discussion #1043/#1333/#1363/#1452/#1469/#1497/#1538/#1550 等）。
  *
- * 0.1.5 起同一会话目录可能存在两代物理文件：v3（session.v3.jsonl.zstd，
- * header version=3）与旧版（session.jsonl.zstd，header version=0）。发现逻辑
- * 每个会话目录只取权威一代：v3 优先，无 v3 时才取旧版；显式路径也可直接给
- * session[.vN].jsonl[.zstd] 文件。
+ * 0.1.5 起同一会话目录可能存在两代以上物理文件：v4（session.v4.jsonl.zstd，
+ * header version=4，0.1.7）、v3（session.v3.jsonl.zstd，header version=3）
+ * 与旧版（session.jsonl.zstd，header version=0/1/2）。发现逻辑每个会话目录只取
+ * 权威一代：V4 > V3 > V2；显式路径也可直接给 session[.vN].jsonl[.zstd] 文件。
  *
  * 用法：
  *   node verify-session.mjs [<path>|--all|--latest] [--json] [--heap-mb N]
  *                           [--ignore-type t1,t2] [--lenient-unknown]
  *   <path>      单个会话文件（session[.vN].jsonl[.zstd]；也接受会话目录）
  *   --latest    最新修改的会话（默认）
- *   --all       扫描 ~/.dsh/sessions 下全部会话（输出 v2/v3 计数）
+ *   --all       扫描 ~/.dsh/sessions 下全部会话（输出 v4/v3/v2 计数）
  *   --heap-mb   物化堆估算阈值（默认 1024，超了 warn 冷启动卡顿风险）
  *   --ignore-type 追加合法事件类型（第三方插件扩展时用）
  *   --lenient-unknown 未知事件类型降级为 warn（默认 FAIL：harness 恢复会整包拒绝）
@@ -31,7 +31,7 @@ const argv = process.argv.slice(2)
 if (argv.includes('--help') || argv.includes('-h')) {
   console.log(`dsh-verify-session: 会话日志完整性闸门（离线）
 用法: node verify-session.mjs [<path>|--all|--latest] [--json] [--heap-mb N] [--ignore-type t1,t2] [--lenient-unknown]
-  <path>  单个会话文件（session[.vN].jsonl[.zstd]；也接受会话目录，v3 优先）
+  <path>  单个会话文件（session[.vN].jsonl[.zstd]；也接受会话目录，V4 > V3 > V2 优先）
   --latest 最新修改的会话（默认）；--all 全部会话（每个会话目录只取权威一代）
   --ignore-type 追加合法事件类型；--lenient-unknown 未知类型降级 warn
 退出码: 0=通过（含 warn/skip）；1=有 FAIL；2=找不到会话文件`)
@@ -50,11 +50,12 @@ const heapMb = parseInt(arg('--heap-mb', '1024'), 10) || 1024
 const ignoreTypes = new Set(arg('--ignore-type', '').split(',').map(s => s.trim()).filter(Boolean))
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
 
-// ---------- 已知事件类型（v2 ∪ v3 并集，与 dsh-update-guide/scripts/scan-upgrade.mjs 完全一致） ----------
-// v3 部分同步官方 0.1.5 @deepseek-ai/dsh-session/lib/types/known-event-types.js
-// （由 scripts/gen-persistence-catalog.ts 生成）；v2 兼容部分保留 header 记录
-// （session）与存储记录层（reasoning-chunks/text-chunks/tool-call-chunks）及
-// 0.1.2 时代类型（assistant/chunk、tool/code-dispatch、tool/code-dispatch-start）。
+// ---------- 已知事件类型（v2 ∪ v3 ∪ v4 并集，与 dsh-update-guide/scripts/scan-upgrade.mjs 完全一致） ----------
+// 新代部分同步官方 0.1.7 @deepseek-ai/dsh-session/lib/types/known-event-types.js
+// （由 scripts/gen-persistence-catalog.ts 生成，含 workspace/changes、image/offload、
+// developer/message）；v2 兼容部分保留 header 记录（session）与存储记录层
+// （reasoning-chunks/text-chunks/tool-call-chunks）及 0.1.2 时代类型
+// （assistant/chunk、tool/code-dispatch、tool/code-dispatch-start）。
 // 两处列表必须逐项一致（selftest 校验），增删请同步。
 const KNOWN_TYPES = new Set([
   'session', 'permission/preset', 'sandbox/mode', 'approval/policy', 'approval/asked', 'approval/decided',
@@ -76,6 +77,8 @@ const KNOWN_TYPES = new Set([
   'team/member', 'team/task', 'team/message/queued', 'team/message/delivered',
   'tool-workflow/agent-end', 'tool-workflow/agent-start',
   'tool-workflow/run-end', 'tool-workflow/run-start',
+  // 0.1.6-alpha.1 / 0.1.7 新增（与 scan-upgrade.mjs 同步；V4 的 workspace/changes 必须在内）
+  'developer/message', 'image/offload', 'workspace/changes',
 ])
 
 // ---------- 输出 ----------
@@ -90,15 +93,17 @@ const check = (cond, id, label, evidence = '', failKind = 'FAIL') =>
   report(cond ? 'PASS' : failKind, id, label, evidence)
 
 // ---------- 目标文件解析 ----------
+const V4_ZSTD = 'session.v4.jsonl.zstd'
 const V3_ZSTD = 'session.v3.jsonl.zstd'
 const V2_ZSTD = 'session.jsonl.zstd'
+const V4_JSONL = 'session.v4.jsonl'
 const V3_JSONL = 'session.v3.jsonl'
 const V2_JSONL = 'session.jsonl'
 
-// 一个会话目录的权威文件：v3 优先（新的物理代），无 v3 时才用旧版；
-// 避免同一会话的两代文件被重复扫描。
+// 一个会话目录的权威文件：V4 > V3 > V2（新的物理代优先）；
+// 避免同一会话的多代文件被重复扫描。
 function authorityInDir(dir) {
-  for (const name of [V3_ZSTD, V3_JSONL, V2_ZSTD, V2_JSONL]) {
+  for (const name of [V4_ZSTD, V4_JSONL, V3_ZSTD, V3_JSONL, V2_ZSTD, V2_JSONL]) {
     const f = join(dir, name)
     let st
     try { st = statSync(f) } catch { continue }
@@ -107,16 +112,17 @@ function authorityInDir(dir) {
   return null
 }
 
-// 文件名对应的物理代（用于 v2/v3 计数与 S12 一致性检查）
+// 文件名对应的物理代（用于 v4/v3/v2 计数与 S12 一致性检查）
 function generationOf(path) {
   const b = basename(path)
+  if (b === V4_ZSTD || b === V4_JSONL) return 'v4'
   if (b === V3_ZSTD || b === V3_JSONL) return 'v3'
   if (b === V2_ZSTD || b === V2_JSONL) return 'v2'
   return 'unknown'
 }
 
 function countGens(list) {
-  const counts = { v2: 0, v3: 0, unknown: 0 }
+  const counts = { v2: 0, v3: 0, v4: 0, unknown: 0 }
   for (const f of list) counts[generationOf(f)]++
   return counts
 }
@@ -209,22 +215,23 @@ function checkSession(path) {
   }
   report('PASS', 'JSON', `解析 ${events.length} 个事件（${lineNo} 行）`)
 
-  // S12 文件名与 header.version 一致性（0.1.5 起 v3 文件名为 session.v3.jsonl[.zstd]）
+  // S12 文件名与 header.version 一致性（0.1.7 起 v4 文件名为 session.v4.jsonl[.zstd]）
   // 官方 generationLogFilename：version 0 → session.jsonl[.zstd]；version N≥1 → session.vN.jsonl[.zstd]。
   // 旧 header 的 version 0/1/2 均合法（本机旧文件大量为 0），不按数字硬校验；
-  // 只有 v3 文件名配非 3 version 是硬错误，旧文件名配 version 3 提示未来重命名。
+  // 新代文件名（v3/v4）配错 version 是硬错误；旧文件名配更高 version（3/4）提示迁移后未重命名（WARN）。
   {
     let hdr = null
     try { hdr = JSON.parse(headerRaw) } catch {}
     const gen = generationOf(path)
+    const expected = gen === 'v4' ? 4 : gen === 'v3' ? 3 : null
     if (!hdr || hdr.type !== 'session') {
       check(false, 'S12', 'header 记录合法（首行 type 必须是 session）',
         hdr ? `type=${JSON.stringify(hdr.type)}` : '首行 JSON 不可解析')
-    } else if (gen === 'v3') {
-      check(hdr.version === 3, 'S12', 'V3 文件名与 header.version 一致',
-        `version=${String(hdr.version)}（应为 3）`)
-    } else if (gen === 'v2' && hdr.version === 3) {
-      report('WARN', 'S12', `文件名 ${basename(path)} 与 header.version=3 不符（迁移后未重命名？）`, '')
+    } else if (expected !== null) {
+      check(hdr.version === expected, 'S12', `${gen.toUpperCase()} 文件名与 header.version 一致`,
+        `version=${String(hdr.version)}（应为 ${expected}）`)
+    } else if (gen === 'v2' && typeof hdr.version === 'number' && hdr.version >= 3) {
+      report('WARN', 'S12', `文件名 ${basename(path)} 与 header.version=${hdr.version} 不符（迁移后未重命名？）`, '')
     } else {
       report('PASS', 'S12', `header 与文件名一致（version=${String(hdr.version)}）`, '')
     }
@@ -370,7 +377,7 @@ if (files.length === 0) {
   console.error('verify-session: 找不到会话文件（指定路径或确认 ~/.dsh/sessions 存在）')
   process.exit(2)
 }
-if (!jsonOut) console.log(`== dsh-verify-session: ${files.length} 个会话（v3=${counts.v3} / v2=${counts.v2}${counts.unknown ? ` / 其它=${counts.unknown}` : ''}）\n`)
+if (!jsonOut) console.log(`== dsh-verify-session: ${files.length} 个会话（v4=${counts.v4} / v3=${counts.v3} / v2=${counts.v2}${counts.unknown ? ` / 其它=${counts.unknown}` : ''}）\n`)
 for (const f of files) {
   if (!jsonOut) console.log(`--- ${f}`)
   checkSession(f)

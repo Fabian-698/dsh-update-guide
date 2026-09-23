@@ -1,8 +1,10 @@
-# 模型修复(UNKNOWN_MODEL)完整复盘(0.1.5 版)
+# 模型修复(UNKNOWN_MODEL)完整复盘(0.1.5 → 0.1.7 版)
 
 > 升级 0.1.2-rc.1 / 0.1.5-rc.1 后,旧会话发起模型调用报 `UNKNOWN_MODEL` 的定位、修复、验证全过程。
 > 2026-09-05 首轮实战:16+1 个会话,先单会话试通、批量切换、统一方案,全部归零。
 > 2026-09-10 按 0.1.5 复核:新默认模型、合法目录并集、selectModel 写全局默认的副作用一并写入本版。
+> 2026-09-23 按 0.1.7-rc.1 复核:声明来源改为 Profile cordis.patch.yml(+dump-config);内置 deepseek-official 集
+> 自 0.1.6-alpha.2 起缩减为 2 个 id,旧版 4-id 判定会漏报(本机实测 87 个顶层会话)。
 
 ## 0. 前置条件:先修 v0 迁移,再修模型
 
@@ -27,13 +29,20 @@ UNKNOWN_MODEL 会话如果**同时**命中 v0 迁移拒绝(0.1.5 的 v0→v1 迁
 
 **0.1.5 的两处变化**:
 1. **新会话默认模型变为 `deepseek-flash`**(DeepSeek-V41-Flash);配置文件显式指定模型时以配置值为准。
-2. **合法目录是三者的并集**:
-   - 内置 `deepseek-official` 模型集(0.1.5 共 4 个 id)——
-     `deepseek-flash`、`deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-v4-flash-vision-exp`;
-   - settings.yaml 的 `llm-deepseek.models[*].id`(**扩展** deepseek-official 内置集,例如
-     `deepseek-v4.1-flash-expires-on-0910`);
-   - settings.yaml 的 `llm-pi-ai.providers.<name>.models[*].id`(第三方 provider 声明,例如
-     `ark-coding-plan` 下的 `deepseek-v4-flash-ga-260731`)。
+2. **合法目录是三者的并集**(以下是 0.1.5 时代的来源,0.1.7 变化见下):
+   - 内置 `deepseek-official` 模型集(0.1.5 共 4 个 id)——`deepseek-flash`、`deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-v4-flash-vision-exp`;
+   - `llm-deepseek.models[*].id`(**扩展** deepseek-official 内置集,例如 `deepseek-v4.1-flash-expires-on-0910`);
+   - `llm-pi-ai.providers.<name>.models[*].id`(第三方 provider 声明,例如 `ark-coding-plan` 下的 `deepseek-v4-flash-ga-260731`)。
+
+**0.1.7 的三处变化(直接决定检查器怎么写)**:
+1. **声明来源**:模型清单在 **Profile 的 `cordis.patch.yml`**(0.1.7 起 `settings.yaml` 只导入一次并改名
+   `settings.yaml.imported`)。检查器顺序:Profile patch → `dsh --profile <p> --dump-config`(补 bundle 声明)
+   → `settings.yaml` → `settings.yaml.imported`。
+2. **内置集缩减**:0.1.6-alpha.2 起内置 `deepseek-official` 只剩 **`deepseek-flash` + `deepseek-v4-pro`**;
+   `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 已移除且**无别名映射**。
+3. **判定实现**:dsh 的 `model-selection-projection` 取 `next = pending ?? lastUsed`
+   (`lastUsed` = 最后一条 `request/header` 的 `data.header.config`),等价于"最后一条 `model/selection`(若有),
+   否则最后一条 `request/header`"——**没有 selection 的会话,当前生效模型就是最后一条 request/header**。
 
 本机 0.1.2 真实案例(配置漂移):
 
@@ -42,7 +51,7 @@ UNKNOWN_MODEL 会话如果**同时**命中 v0 迁移拒绝(0.1.5 的 v0→v1 迁
 provider: ark-coding-plan
 model:    deepseek-v4-flash          # 旧名,无后缀
 
-# settings.yaml 里该 provider 只声明了:
+# 当时的 settings.yaml(0.1.7 起改成 Profile cordis.patch.yml)里该 provider 只声明了:
 models:
   - id: deepseek-v4-flash-ga-260731  # 新名,带日期后缀
   - id: deepseek-v4-pro-ga-260813
@@ -56,12 +65,15 @@ models:
 provider/model**——这才是会话下次调用时会用的模型,历史早期引用不算数。
 
 ```bash
-# 单个会话(v3 文件优先;两个文件都在时读 v3,见第 3 节误报 6)
+# 单个会话(按 V4 > V3 > V2 选权威文件,见第 3 节误报 6/7)
 D=~/.dsh/sessions/<workspace>/<sessionId>
-zstd -dc "$D/session.v3.jsonl.zstd" 2>/dev/null | grep '"model/selection"' | tail -1
-zstd -dc "$D/session.v3.jsonl.zstd" 2>/dev/null | grep '"request/header"'   | tail -1
-zstd -dc "$D/session.jsonl.zstd"    2>/dev/null | grep '"model/selection"' | tail -1
-zstd -dc "$D/session.jsonl.zstd"    2>/dev/null | grep '"request/header"'   | tail -1
+for f in session.v4.jsonl.zstd session.v3.jsonl.zstd session.jsonl.zstd; do
+  [ -f "$D/$f" ] || continue
+  echo "== $f"
+  zstd -dc "$D/$f" | grep '"model/selection"' | tail -1
+  zstd -dc "$D/$f" | grep '"request/header"'   | tail -1
+  break
+done
 
 # 全量:run 体检脚本(自动跳过子代理会话)
 node <skill>/scripts/scan-upgrade.mjs    # model 分类列出失效 provider/model
@@ -89,9 +101,14 @@ node <skill>/scripts/fix-model-refs.mjs --list   # 等价的逐会话清单
 5. **子代理/嵌套会话的旧引用**。子代理 header 里可能保留父会话当时的旧模型,父会话已修好,子代理无需修
    (打开子代理本来就要父会话地址)。不跳过 → 父会话修完仍报失效。
    正确判定:按第 2 节四个 header 特征跳过子代理/嵌套会话。
-6. **迁移后的 v3 后继 vs v2 原文件**。0.1.5 迁移旧会话时保留 `session.jsonl.zstd`(旧引用仍在),
-   另生成 `session.v3.jsonl.zstd`(可能已带新 selection)。只扫 v2 → 误报"仍失效"。
-   正确判定:v3 文件优先;两个文件都在时读 v3(scan/fix 均版本感知)。
+6. **迁移后的新代后继 vs 旧原文件**。迁移旧会话时保留 `session.jsonl.zstd`(旧引用仍在),
+   另生成 `session.v3.jsonl.zstd` / `session.v4.jsonl.zstd`(可能已带新 selection)。只扫旧文件 → 误报"仍失效"。
+   正确判定:按 **V4 > V3 > V2** 选权威文件(scan/fix 均如此)。
+7. **内置集用了旧版本的 4 个 id**(本机 0.1.7 实测)。0.1.6-alpha.2 起 `deepseek-v4-flash` /
+   `deepseek-v4-flash-vision-exp` 已从内置集移除,但旧检查器仍把它们当合法 → 87 个顶层会话被**漏报**
+   (deepseek-v4-flash ×73、vision-exp ×14,均无 `model/selection`,当前生效模型取自最后一条 `request/header`)。
+   正确判定:内置集按 dsh 版本切换(0.1.6-alpha.2 起 2 个 id),或直接读安装树
+   `node_modules/@deepseek-ai/dsh-llm-deepseek/lib` 的模型清单。
 
 > 另有两种"看似失效、其实合法"的情形无需动作:没有任何 selection/header 的空会话(跳过不判);
 > 配置里被注释掉或不属于当前 profile 的 provider(不参与该 profile 的判定)。
@@ -103,7 +120,7 @@ node <skill>/scripts/fix-model-refs.mjs --list   # 等价的逐会话清单
 | 方案 | 说明 | 结论 |
 |---|---|---|
 | 会话级 `session/selectModel` | 逐会话切换引用,不动全局 | ✅ 首选:精准、可批量、可审计(写 model/selection 事件) |
-| 改 settings.yaml 恢复旧引用 | 把失效名重新声明出来 | 保留"不该存在的旧名",复现漂移 |
+| 改配置(Profile patch / 原 settings.yaml)恢复旧引用 | 把失效名重新声明出来 | 保留"不该存在的旧名",复现漂移 |
 | 改会话日志文件 | 改写记录的 provider/model | 危险:日志是审计链,不可篡改 |
 
 ### 4.2 单会话试通(先证明路径可行)
@@ -112,7 +129,7 @@ node <skill>/scripts/fix-model-refs.mjs --list   # 等价的逐会话清单
 # 1) 拿 cookie(登录 token 从浏览器地址栏 /?token=... 获取):
 curl -c /tmp/dshcookies.txt -o /dev/null "http://127.0.0.1:3080/?token=<TOKEN>"
 
-# 2) 对单个会话发 selectModel(切到并集内存在的模型;0.1.5 新默认 deepseek-flash):
+# 2) 对单个会话发 selectModel(切到并集内存在的模型;0.1.7 内置只剩 deepseek-flash / deepseek-v4-pro):
 curl -s -b /tmp/dshcookies.txt -X POST -H 'Content-Type: application/json' \
   http://127.0.0.1:3080/api/session/selectModel \
   --data-binary '{"type":"client-request","rpcId":"sm1","method":"session/selectModel",
@@ -135,13 +152,13 @@ node <skill>/scripts/fix-model-refs.mjs --provider deepseek-official --model dee
 ```
 
 脚本行为:对每个**当前引用无效**的顶层会话,把它的引用切到指定模型
-(只切无效的,不动本来就有效的;`--all` 才强制全部重切);目标合法性用第 1 节的**并集**预检,
+(只切无效的,不动本来就有效的;`--all` 才强制全部重切);目标合法性用第 1 节的**并集**预检(来源:Profile patch / dump-config,见 0.1.7 变化 1),
 不在并集内直接拒绝执行;响应 `"ok":false` 会计数报错并继续,最后打印成功/失败数。
 失败多半是 token 过期、会话被锁(session.lock)或会话正忙,重跑即可(幂等)。
 
 **⚠ 0.1.5 副作用:selectModel 成功后会同时写全局默认模型**(内部走 `agentDefaultModel.saveSelection`)。脚本会打印该提醒;这意味着批量修复
 可能把"新会话默认模型"一并改掉。执行前想清楚全局默认要停在哪(`deepseek-flash` 是 0.1.5 的
-出厂默认);如果只想修旧会话、不想动全局,执行后到设置面板/settings.yaml 把默认模型改回期望值。
+出厂默认);如果只想修旧会话、不想动全局,执行后到设置面板或在 Profile patch 里把默认模型改回期望值。
 
 ### 4.4 修复后遗留的"旧引用"解释
 
@@ -156,25 +173,27 @@ node <skill>/scripts/fix-model-refs.mjs --provider deepseek-official --model dee
 node <skill>/scripts/scan-upgrade.mjs
 #   → model | ok | 会话当前模型引用全部有效(顶层共扫描 N 会话,跳过子代理 M)
 
-# 2) 抽查修复过的会话,最后一条 selection(v3 优先):
-zstd -dc <会话目录>/session.v3.jsonl.zstd 2>/dev/null | grep '"model/selection"' | tail -1
-zstd -dc <会话目录>/session.jsonl.zstd   | grep '"model/selection"' | tail -1
+# 2) 抽查修复过的会话,最后一条 selection(按 V4 > V3 > V2):
+for f in session.v4.jsonl.zstd session.v3.jsonl.zstd session.jsonl.zstd; do
+  [ -f "<会话目录>/$f" ] && zstd -dc "<会话目录>/$f" | grep '"model/selection"' | tail -1 && break
+done
 #   → {"provider":"deepseek-official","model":"deepseek-flash",...}
 
 # 3) 打开旧会话发一条消息:turn/start → request/header → assistant/chunk 正常走
 
-# 4) 收尾双闸门(含 V3 一致性 S12):
+# 4) 收尾双闸门(含 V3/V4 一致性 S12):
 node <skill>/scripts/verify-session.mjs --all
 node <skill>/scripts/verify-patch.mjs --profile web
 ```
 
 ## 6. 复用要点(其他设备)
 
-1. 先跑 `scan-upgrade.mjs` 看 model 分类(失效 provider/model 列表),或
-   `fix-model-refs.mjs --list` 看逐会话清单;两者都跳过子代理会话、v3 优先。
-2. 确认漂移模式:旧名 vs 新名(改名、加日期后缀、换 provider;或默认模型换代)。
-3. **能切 `deepseek-official` 就切它**(内置集固定,不易再漂);0.1.5 建议目标 `deepseek-flash`
-   (新默认),老会话原本用 `deepseek-v4-flash` 也可保留。第三方 provider 只选并集内真实声明的 id。
+1. 先跑 `scan-upgrade.mjs` 看 model 分类(失效 provider/model 列表,带 ×N 计数),或
+   `fix-model-refs.mjs --list` 看逐会话清单;两者都跳过子代理会话、按 V4 > V3 > V2 选文件。
+2. 确认漂移模式:旧名 vs 新名(改名、加日期后缀、换 provider;默认模型换代;或**版本删除了内置模型**)。
+3. **能切 `deepseek-official` 就切它**(内置集固定,不易再漂);0.1.7 内置只剩 `deepseek-flash` /
+   `deepseek-v4-pro`,**不要再切已移除的 `deepseek-v4-flash` / `-vision-exp`**;也可切装配树里真实声明且在用的
+   provider/model(本机现用 `opencode-go-oai/deepseek-v4.1-flash`)。第三方 provider 只选并集内真实声明的 id。
 4. 先单会话试通 → 再批量;批量前确认 **selectModel 会写全局默认模型**这一副作用能否接受。
 5. 切完重跑 scan → model OK → 打开旧会话抽查 → 双闸门 ALL PASS。
 6. 独立复制到别的机器:先在装有 owner 技能的机器上 `node <skill>/scripts/sync-gates.mjs --embed` 生成内置副本,

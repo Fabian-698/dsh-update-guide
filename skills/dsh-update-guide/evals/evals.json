@@ -24,6 +24,18 @@
       "prompt": "升级到 0.1.5-rc.1 后，我想把之前禁用的第三方插件重新启用，先帮我确认哪些能用、哪些不能用",
       "expected_output": "先看 scan-upgrade.mjs 的 source 分类（含 connection.rpc.handle 缺 webServer inject 模式），再用 test-plugin-boot.mjs 做隔离启动测试得到不兼容清单（如 @js2hou/dsh-mcp-manager 报 cannot get property \"webServer\" without inject，需保持 disabled），其余插件给出可启用结论",
       "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "dsh 升级到 0.1.7-rc.1 后，大量旧预设会话一打开就报 Unknown agent preset: router-flash，怎么修？",
+      "expected_output": "说明 0.1.7 起 ~/.dsh/.agent-presets/ 不再被读取（按旧办法建桩无效）；用 scan-upgrade.mjs 的 preset / legacy-presets 分类拿到 preset 名与受影响顶层会话数；在 profiles/<p>/cordis.patch.yml 声明 - id: preset-<id> / name: '@deepseek-ai/dsh-agent-preset' / config:{id,order,plugins}；dump-config --patch 自检 + test-plugin-boot.mjs 隔离启动后走 dshmarket 重启；旧目录等无会话引用后再删",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "0.1.7 的会话日志变成 session.v4.jsonl.zstd 了，我的校验脚本看不见新会话，而且 scan 报了很多模型失效",
+      "expected_output": "会话文件发现必须按 V4 > V3 > V2 并按 header version 分流；模型声明改读 Profile cordis.patch.yml / dsh --dump-config（settings.yaml 已只导入一次并改名 settings.yaml.imported）；内置 deepseek-official 集自 0.1.6-alpha.2 起只剩 deepseek-flash + deepseek-v4-pro，deepseek-v4-flash / -vision-exp 已移除",
+      "files": []
     }
   ]
 }

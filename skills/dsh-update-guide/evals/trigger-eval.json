@@ -78,5 +78,25 @@
   {
     "query": "帮我写一个 skill 来管理我的读书笔记",
     "should_trigger": false
+  },
+  {
+    "query": "我刚把 dsh 升级到 0.1.7-rc.1，一堆旧预设会话打开就报 Unknown agent preset: router-flash",
+    "should_trigger": true
+  },
+  {
+    "query": "dsh 0.1.7 不再读 ~/.dsh/.agent-presets 了，怎么把旧 preset 迁移成声明式 preset？",
+    "should_trigger": true
+  },
+  {
+    "query": "升级 dsh 后 session.v4.jsonl.zstd 里的会话我的工具看不见，是假绿吗",
+    "should_trigger": true
+  },
+  {
+    "query": "dsh 升级后 scan 说 deepseek-v4-flash 失效，但以前一直是合法的",
+    "should_trigger": true
+  },
+  {
+    "query": "dsh 0.1.5 升级到 0.1.7 的破坏性变更有哪些？帮我体检一下",
+    "should_trigger": true
   }
 ]
